@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from app.chain.tmdb import TmdbChain
 from app.core.event import eventmanager, Event
+from app.db.transferhistory_oper import TransferHistoryOper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import FileItem, NotificationType
@@ -16,7 +17,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.1.3"
+    plugin_version = "0.1.4"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -291,6 +292,7 @@ class VarietySpecialMapper(_PluginBase):
         if not source_kind:
             return
 
+        source_season = self._extract_source_season(source_name or file_path.name, meta, rule)
         issue_index = override_index if override_index is not None else self._extract_source_index(source_name or file_path.name, meta, source_kind)
         if issue_index is None and override_target_episode is None:
             logger.info(f"{file_path.name} 未提取到期数，跳过纠偏")
@@ -299,7 +301,12 @@ class VarietySpecialMapper(_PluginBase):
         target_episode = override_target_episode
         specials_season = int(rule.get("specials_season", 0))
         if target_episode is None:
-            target_episode = self._resolve_target_episode(rule=rule, kind=source_kind, issue_index=issue_index)
+            target_episode = self._resolve_target_episode(
+                rule=rule,
+                kind=source_kind,
+                issue_index=issue_index,
+                source_season=source_season,
+            )
         if not target_episode:
             logger.info(f"{file_path.name} 未匹配到 TMDB 特别篇目标集数，跳过纠偏")
             return
@@ -322,6 +329,13 @@ class VarietySpecialMapper(_PluginBase):
         logger.info(f"综艺特别篇纠偏成功：{file_path} -> {new_path}")
 
         self._update_transferinfo_paths(transferinfo, old_path=file_path, new_path=new_path)
+        self._update_transfer_history(
+            event_data=event_data,
+            old_path=file_path,
+            new_path=new_path,
+            target_season=specials_season,
+            target_episode=int(target_episode),
+        )
         self._append_history(
             {
                 "show": getattr(mediainfo, "title", None) or getattr(mediainfo, "name", None) or rule.get("name"),
@@ -438,6 +452,20 @@ class VarietySpecialMapper(_PluginBase):
                     return kind, None, None
         return None, None, None
 
+    def _extract_source_season(self, file_name: str, meta: Any, rule: Dict[str, Any]) -> int:
+        match = re.search(r"S(\d{1,2})E\d{1,4}", file_name, re.IGNORECASE)
+        if match:
+            return int(match.group(1))
+
+        season_match = re.search(r"第\s*(\d{1,2})\s*季", file_name)
+        if season_match:
+            return int(season_match.group(1))
+
+        season = getattr(meta, "begin_season", None) if meta else None
+        if season is not None:
+            return int(season)
+        return int(rule.get("main_season") or 1)
+
     def _extract_source_index(self, file_name: str, meta: Any, source_kind: str) -> Optional[int]:
         if source_kind == "pilot":
             return 1
@@ -461,7 +489,13 @@ class VarietySpecialMapper(_PluginBase):
             return value
         return None
 
-    def _resolve_target_episode(self, rule: Dict[str, Any], kind: str, issue_index: Optional[int]) -> Optional[int]:
+    def _resolve_target_episode(
+        self,
+        rule: Dict[str, Any],
+        kind: str,
+        issue_index: Optional[int],
+        source_season: int,
+    ) -> Optional[int]:
         tmdbid = rule.get("tmdbid")
         if not tmdbid or issue_index is None:
             return None
@@ -475,15 +509,15 @@ class VarietySpecialMapper(_PluginBase):
                 return None
             mapping = self._build_tmdb_mapping(rule, episodes)
             self._tmdb_mapping_cache[cache_key] = mapping
-        target = mapping.get(kind, {}).get(int(issue_index))
+        target = mapping.get(str(int(source_season)), {}).get(kind, {}).get(int(issue_index))
         if target:
             return int(target)
         return None
 
-    def _build_tmdb_mapping(self, rule: Dict[str, Any], episodes: List[Any]) -> Dict[str, Dict[int, int]]:
+    def _build_tmdb_mapping(self, rule: Dict[str, Any], episodes: List[Any]) -> Dict[str, Dict[str, Dict[int, int]]]:
         types = rule.get("types") or {}
-        mapping: Dict[str, Dict[int, int]] = {}
-        fallback_counter: Dict[str, int] = {}
+        mapping: Dict[str, Dict[str, Dict[int, int]]] = {}
+        fallback_counter: Dict[Tuple[int, str], int] = {}
 
         def detect_kind(title: str) -> Optional[str]:
             lowered = (title or "").lower()
@@ -499,15 +533,21 @@ class VarietySpecialMapper(_PluginBase):
             if not kind:
                 continue
 
+            season_match = re.search(r"第\s*(\d{1,2})\s*季", title)
+            mapping_season = int(season_match.group(1)) if season_match else int(rule.get("main_season") or 1)
+            counter_key = (mapping_season, kind)
+
             issue_match = re.search(r"第\s*(\d{1,3})\s*期", title)
             if issue_match:
                 issue_index = int(issue_match.group(1))
-                fallback_counter[kind] = max(fallback_counter.get(kind, 0), issue_index)
+                fallback_counter[counter_key] = max(fallback_counter.get(counter_key, 0), issue_index)
             else:
-                fallback_counter[kind] = fallback_counter.get(kind, 0) + 1
-                issue_index = fallback_counter[kind]
+                fallback_counter[counter_key] = fallback_counter.get(counter_key, 0) + 1
+                issue_index = fallback_counter[counter_key]
 
-            mapping.setdefault(kind, {})[issue_index] = int(getattr(episode, "episode_number", 0) or 0)
+            mapping.setdefault(str(mapping_season), {}).setdefault(kind, {})[issue_index] = int(
+                getattr(episode, "episode_number", 0) or 0
+            )
 
         return mapping
 
@@ -562,6 +602,40 @@ class VarietySpecialMapper(_PluginBase):
                     extension=new_path.suffix.lstrip("."),
                 ),
                 "overwrite": True,
+            },
+        )
+
+    @staticmethod
+    def _update_transfer_history(
+        event_data: Dict[str, Any],
+        old_path: Path,
+        new_path: Path,
+        target_season: int,
+        target_episode: int,
+    ):
+        history_id = event_data.get("transfer_history_id")
+        history = TransferHistoryOper().get(history_id) if history_id else None
+        if not history:
+            history = TransferHistoryOper().get_by_dest(str(old_path))
+        if not history:
+            return
+
+        dest_fileitem = dict(history.dest_fileitem or {})
+        dest_fileitem.update(
+            {
+                "path": str(new_path),
+                "name": new_path.name,
+                "basename": new_path.stem,
+                "extension": new_path.suffix.lstrip("."),
+            }
+        )
+        history.update(
+            TransferHistoryOper()._db,
+            {
+                "dest": str(new_path),
+                "dest_fileitem": dest_fileitem,
+                "seasons": f"S{int(target_season):02d}",
+                "episodes": f"E{int(target_episode):02d}",
             },
         )
 
