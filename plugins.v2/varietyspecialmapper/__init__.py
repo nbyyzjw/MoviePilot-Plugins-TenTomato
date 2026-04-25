@@ -8,7 +8,7 @@ from app.chain.tmdb import TmdbChain
 from app.core.event import eventmanager, Event
 from app.log import logger
 from app.plugins import _PluginBase
-from app.schemas import NotificationType
+from app.schemas import FileItem, NotificationType
 from app.schemas.types import EventType
 
 
@@ -16,7 +16,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.1.1"
+    plugin_version = "0.1.2"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -269,6 +269,9 @@ class VarietySpecialMapper(_PluginBase):
         meta = event_data.get("meta")
         fileitem = event_data.get("fileitem")
 
+        source_path = Path(getattr(fileitem, "path", "") or "") if fileitem else None
+        source_name = getattr(fileitem, "name", None) or (source_path.name if source_path else "")
+
         if not target_item or not target_diritem or not mediainfo:
             return
         media_type = getattr(mediainfo, "type", None)
@@ -279,15 +282,15 @@ class VarietySpecialMapper(_PluginBase):
             return
 
         file_path = Path(target_item.path)
-        rule = self._match_rule(mediainfo=mediainfo, file_path=file_path)
+        rule = self._match_rule(mediainfo=mediainfo, file_path=file_path, source_name=source_name)
         if not rule:
             return
 
-        source_kind, override_index, override_target_episode = self._detect_source_kind(file_path.name, rule)
+        source_kind, override_index, override_target_episode = self._detect_source_kind(source_name or file_path.name, rule)
         if not source_kind:
             return
 
-        issue_index = override_index if override_index is not None else self._extract_source_index(file_path.name, meta, source_kind)
+        issue_index = override_index if override_index is not None else self._extract_source_index(source_name or file_path.name, meta, source_kind)
         if issue_index is None and override_target_episode is None:
             logger.info(f"{file_path.name} 未提取到期数，跳过纠偏")
             return
@@ -314,6 +317,7 @@ class VarietySpecialMapper(_PluginBase):
             return
 
         shutil.move(str(file_path), str(new_path))
+        self._move_metadata_sidecars(file_path, new_path)
         logger.info(f"综艺特别篇纠偏成功：{file_path} -> {new_path}")
 
         self._update_transferinfo_paths(transferinfo, old_path=file_path, new_path=new_path)
@@ -328,12 +332,14 @@ class VarietySpecialMapper(_PluginBase):
             }
         )
 
-        if self._notify and getattr(getattr(event, "event_type", None), "value", None) == EventType.TransferComplete.value:
-            self.post_message(
-                mtype=NotificationType.Plugin,
-                title="【综艺特别篇纠偏】",
-                text=f"{new_name}\n已纠偏到 {specials_folder_name}/S{specials_season:02d}E{int(target_episode):02d}",
-            )
+        if getattr(getattr(event, "event_type", None), "value", None) == EventType.TransferComplete.value:
+            self._rescrape_episode(new_path)
+            if self._notify:
+                self.post_message(
+                    mtype=NotificationType.Plugin,
+                    title="【综艺特别篇纠偏】",
+                    text=f"{new_name}\n已纠偏到 {specials_folder_name}/S{specials_season:02d}E{int(target_episode):02d}",
+                )
 
     def _parse_rules(self, text: str) -> List[Dict[str, Any]]:
         if not text:
@@ -345,13 +351,14 @@ class VarietySpecialMapper(_PluginBase):
             logger.error(f"解析综艺特别篇规则失败：{err}")
             return []
 
-    def _match_rule(self, mediainfo: Any, file_path: Path) -> Optional[Dict[str, Any]]:
+    def _match_rule(self, mediainfo: Any, file_path: Path, source_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         tmdbid = getattr(mediainfo, "tmdb_id", None)
         title_candidates = {
             (getattr(mediainfo, "title", None) or "").lower(),
             (getattr(mediainfo, "name", None) or "").lower(),
             file_path.name.lower(),
             str(file_path).lower(),
+            (source_name or "").lower(),
         }
         for rule in self._rules:
             rule_tmdbid = rule.get("tmdbid")
@@ -472,6 +479,34 @@ class VarietySpecialMapper(_PluginBase):
 
         file_list_new = list(getattr(transferinfo, "file_list_new", []) or [])
         transferinfo.file_list_new = [str(new_path) if str(item) == str(old_path) else item for item in file_list_new]
+
+    @staticmethod
+    def _move_metadata_sidecars(old_path: Path, new_path: Path):
+        metadata_suffixes = {".nfo", ".jpg", ".jpeg", ".png", ".webp"}
+        for sidecar in old_path.parent.glob(f"{old_path.stem}.*"):
+            if sidecar == old_path or sidecar.suffix.lower() not in metadata_suffixes:
+                continue
+            target_sidecar = new_path.parent / f"{new_path.stem}{sidecar.suffix}"
+            if target_sidecar.exists():
+                continue
+            shutil.move(str(sidecar), str(target_sidecar))
+
+    @staticmethod
+    def _rescrape_episode(new_path: Path):
+        eventmanager.send_event(
+            EventType.MetadataScrape,
+            {
+                "fileitem": FileItem(
+                    storage="local",
+                    path=str(new_path),
+                    type="file",
+                    name=new_path.name,
+                    basename=new_path.stem,
+                    extension=new_path.suffix.lstrip("."),
+                ),
+                "overwrite": True,
+            },
+        )
 
     def _append_history(self, item: Dict[str, Any]):
         history = self.get_data("history") or []

@@ -12,7 +12,7 @@
     "name": "综艺特别篇纠偏",
     "description": "整理综艺文件时，自动把纯享、陪看、夜聊、惩罚室等内容映射到 TMDB 特别篇（S0）正确集数。",
     "labels": "综艺,刮削,整理",
-    "version": "0.1.1",
+    "version": "0.1.2",
     "icon": "movie.jpg",
     "author": "二狗",
     "level": 1
