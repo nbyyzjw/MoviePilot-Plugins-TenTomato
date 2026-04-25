@@ -16,7 +16,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.1.2"
+    plugin_version = "0.1.3"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -84,6 +84,7 @@ class VarietySpecialMapper(_PluginBase):
         self._notify = bool(config.get("notify", False))
         self._specials_folder = (config.get("specials_folder") or "Specials").strip() or "Specials"
         self._rules_text = config.get("rules_text") or self._default_rules_text()
+        self._rules_text = self._migrate_rules_text(self._rules_text)
         self._rules = self._parse_rules(self._rules_text)
         self._tmdb_mapping_cache = {}
 
@@ -351,6 +352,59 @@ class VarietySpecialMapper(_PluginBase):
             logger.error(f"解析综艺特别篇规则失败：{err}")
             return []
 
+    def _migrate_rules_text(self, text: str) -> str:
+        migrated = text
+        changed = False
+        try:
+            data = json.loads(text)
+        except Exception:
+            return text
+
+        if not isinstance(data, list):
+            return text
+
+        for rule in data:
+            if not isinstance(rule, dict):
+                continue
+            if rule.get("name") != "喜人奇妙夜":
+                continue
+            if int(rule.get("tmdbid") or 0) == 257971:
+                rule["tmdbid"] = 257161
+                changed = True
+
+            types = rule.setdefault("types", {})
+            party = types.setdefault("party", {})
+            party_keywords = set(party.get("source_keywords") or [])
+            party_tmdb_keywords = set(party.get("tmdb_keywords") or [])
+            if "派对" not in party_keywords:
+                party_keywords.add("派对")
+                changed = True
+            if "派对" not in party_tmdb_keywords:
+                party_tmdb_keywords.add("派对")
+                changed = True
+            party["source_keywords"] = list(party_keywords)
+            party["tmdb_keywords"] = list(party_tmdb_keywords or {"聚会", "派对"})
+
+            if "bonus" not in types:
+                types["bonus"] = {
+                    "source_keywords": ["彩蛋", ".Bonus."],
+                    "tmdb_keywords": ["特辑"],
+                }
+                changed = True
+
+        if changed:
+            migrated = json.dumps(data, ensure_ascii=False, indent=2)
+            self.update_config(
+                {
+                    "enabled": self._enabled,
+                    "notify": self._notify,
+                    "specials_folder": self._specials_folder,
+                    "rules_text": migrated,
+                }
+            )
+            logger.info("已自动迁移综艺特别篇纠偏插件旧规则到新格式")
+        return migrated
+
     def _match_rule(self, mediainfo: Any, file_path: Path, source_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         tmdbid = getattr(mediainfo, "tmdb_id", None)
         title_candidates = {
@@ -460,13 +514,16 @@ class VarietySpecialMapper(_PluginBase):
     @staticmethod
     def _build_new_name(file_name: str, target_season: int, target_episode: int) -> str:
         replacement = f"S{int(target_season):02d}E{int(target_episode):02d}"
-        if re.search(r"S\d{1,2}E\d{1,4}", file_name, re.IGNORECASE):
-            return re.sub(r"S\d{1,2}E\d{1,4}", replacement, file_name, count=1, flags=re.IGNORECASE)
+        new_name = file_name
+        if re.search(r"S\d{1,2}E\d{1,4}", new_name, re.IGNORECASE):
+            new_name = re.sub(r"S\d{1,2}E\d{1,4}", replacement, new_name, count=1, flags=re.IGNORECASE)
+        else:
+            path = Path(file_name)
+            new_name = f"{path.stem}.{replacement}{path.suffix}"
 
-        path = Path(file_name)
-        stem = path.stem
-        suffix = path.suffix
-        return f"{stem}.{replacement}{suffix}"
+        if re.search(r"第\s*\d+\s*集", new_name):
+            new_name = re.sub(r"第\s*\d+\s*集", f"第 {int(target_episode)} 集", new_name, count=1)
+        return new_name
 
     @staticmethod
     def _update_transferinfo_paths(transferinfo: Any, old_path: Path, new_path: Path):
