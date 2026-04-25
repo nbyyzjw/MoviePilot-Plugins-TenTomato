@@ -1,0 +1,11 @@
+{
+  "SimpleTextBoard": {
+    "name": "简单文本面板",
+    "description": "一个可本地安装的 MoviePilot V2 示例插件，用来展示自定义标题和文本。",
+    "labels": "示例,面板",
+    "version": "1.0.0",
+    "icon": "Plugins_A.png",
+    "author": "二狗",
+    "level": 1
+  }
+}
