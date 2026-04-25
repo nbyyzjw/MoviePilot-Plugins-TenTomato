@@ -36,7 +36,7 @@ class VarietySpecialMapper(_PluginBase):
             [
                 {
                     "name": "喜人奇妙夜",
-                    "tmdbid": 257971,
+                    "tmdbid": 257161,
                     "match_titles": ["喜人奇妙夜", "Amazing Night", "Amazing.Night"],
                     "main_season": 1,
                     "specials_season": 0,
@@ -63,17 +63,15 @@ class VarietySpecialMapper(_PluginBase):
                             "tmdb_keywords": ["惩罚室", "不好笑惩罚室"]
                         },
                         "party": {
-                            "source_keywords": ["聚会", ".Party."],
-                            "tmdb_keywords": ["聚会"]
+                            "source_keywords": ["聚会", "派对", ".Party."],
+                            "tmdb_keywords": ["聚会", "派对"]
+                        },
+                        "bonus": {
+                            "source_keywords": ["彩蛋", ".Bonus."],
+                            "tmdb_keywords": ["特辑"]
                         }
                     },
-                    "manual_matches": [
-                        {
-                            "source_keywords": ["超前聚会"],
-                            "type": "party",
-                            "index": 1
-                        }
-                    ]
+                    "manual_matches": []
                 }
             ],
             ensure_ascii=False,
