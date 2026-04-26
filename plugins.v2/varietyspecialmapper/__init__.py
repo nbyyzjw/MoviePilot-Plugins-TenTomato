@@ -5,20 +5,22 @@ import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.chain import ChainBase
 from app.chain.tmdb import TmdbChain
 from app.core.event import eventmanager, Event
+from app.core.meta.metabase import MetaBase
 from app.db.transferhistory_oper import TransferHistoryOper
 from app.log import logger
 from app.plugins import _PluginBase
 from app.schemas import FileItem, NotificationType
-from app.schemas.types import EventType
+from app.schemas.types import EventType, MediaType
 
 
 class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.3.1"
+    plugin_version = "0.3.2"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -31,6 +33,8 @@ class VarietySpecialMapper(_PluginBase):
     _rules: List[Dict[str, Any]] = []
     _common_types: Dict[str, Dict[str, List[str]]] = {}
     _tmdb_mapping_cache: Dict[str, Dict[str, Dict[int, int]]] = {}
+    _original_recognize_media = None
+    _original_async_recognize_media = None
 
     TYPE_ORDER = ["pilot", "pure", "watch", "chat", "punish", "party", "bonus"]
     UI_SCHEMA_VERSION = "interactive_v2"
@@ -120,6 +124,66 @@ class VarietySpecialMapper(_PluginBase):
         ]
 
     def init_plugin(self, config: dict = None):
+        plugin_instance: "VarietySpecialMapper" = self
+
+        def patched_recognize_media(
+            chain_self,
+            meta: MetaBase = None,
+            mtype: Optional[MediaType] = None,
+            tmdbid: Optional[int] = None,
+            doubanid: Optional[str] = None,
+            bangumiid: Optional[int] = None,
+            episode_group: Optional[str] = None,
+            cache: bool = True,
+        ):
+            if plugin_instance._enabled and meta:
+                meta = plugin_instance._preprocess_meta_for_special_recognition(meta)
+            if not plugin_instance._original_recognize_media:
+                return None
+            return plugin_instance._original_recognize_media(
+                chain_self,
+                meta,
+                mtype,
+                tmdbid,
+                doubanid,
+                bangumiid,
+                episode_group,
+                cache,
+            )
+
+        async def patched_async_recognize_media(
+            chain_self,
+            meta: MetaBase = None,
+            mtype: Optional[MediaType] = None,
+            tmdbid: Optional[int] = None,
+            doubanid: Optional[str] = None,
+            bangumiid: Optional[int] = None,
+            episode_group: Optional[str] = None,
+            cache: bool = True,
+        ):
+            if plugin_instance._enabled and meta:
+                meta = plugin_instance._preprocess_meta_for_special_recognition(meta)
+            if not plugin_instance._original_async_recognize_media:
+                return None
+            return await plugin_instance._original_async_recognize_media(
+                chain_self,
+                meta,
+                mtype,
+                tmdbid,
+                doubanid,
+                bangumiid,
+                episode_group,
+                cache,
+            )
+
+        setattr(patched_recognize_media, "_patched_by", id(self))
+        if getattr(ChainBase.recognize_media, "_patched_by", object()) != id(self):
+            self._original_recognize_media = getattr(ChainBase, "recognize_media", None)
+
+        setattr(patched_async_recognize_media, "_patched_by", id(self))
+        if getattr(ChainBase.async_recognize_media, "_patched_by", object()) != id(self):
+            self._original_async_recognize_media = getattr(ChainBase, "async_recognize_media", None)
+
         config = config or {}
         self._enabled = bool(config.get("enabled", False))
         self._notify = bool(config.get("notify", False))
@@ -133,8 +197,22 @@ class VarietySpecialMapper(_PluginBase):
         if needs_persist:
             self._save_structured_config()
 
+        if self._enabled:
+            if getattr(ChainBase.recognize_media, "_patched_by", object()) != id(self):
+                ChainBase.recognize_media = patched_recognize_media
+            if getattr(ChainBase.async_recognize_media, "_patched_by", object()) != id(self):
+                ChainBase.async_recognize_media = patched_async_recognize_media
+        else:
+            self.stop_service()
+
     def get_state(self) -> bool:
         return self._enabled
+
+    def stop_service(self):
+        if getattr(ChainBase.recognize_media, "_patched_by", object()) == id(self) and self._original_recognize_media:
+            ChainBase.recognize_media = self._original_recognize_media
+        if getattr(ChainBase.async_recognize_media, "_patched_by", object()) == id(self) and self._original_async_recognize_media:
+            ChainBase.async_recognize_media = self._original_async_recognize_media
 
     @staticmethod
     def get_command() -> List[Dict[str, Any]]:
@@ -320,9 +398,6 @@ class VarietySpecialMapper(_PluginBase):
                 }
             )
         return content
-
-    def stop_service(self):
-        pass
 
     @eventmanager.register([
         EventType.TransferComplete,
@@ -728,6 +803,13 @@ class VarietySpecialMapper(_PluginBase):
             str(file_path).lower(),
             (source_name or "").lower(),
         }
+        return self._match_rule_by_candidates(title_candidates=title_candidates, tmdbid=tmdbid)
+
+    def _match_rule_by_title(self, title: str) -> Optional[Dict[str, Any]]:
+        title_candidates = {(title or "").lower()}
+        return self._match_rule_by_candidates(title_candidates=title_candidates, tmdbid=None)
+
+    def _match_rule_by_candidates(self, title_candidates: set, tmdbid: Optional[int] = None) -> Optional[Dict[str, Any]]:
         for rule in self._rules:
             rule_tmdbid = rule.get("tmdbid")
             if rule_tmdbid and tmdbid and int(rule_tmdbid) == int(tmdbid):
@@ -737,6 +819,44 @@ class VarietySpecialMapper(_PluginBase):
                 if alias and any(alias in candidate for candidate in title_candidates):
                     return rule
         return None
+
+    def _preprocess_meta_for_special_recognition(self, meta: MetaBase) -> MetaBase:
+        raw_title = (getattr(meta, "org_string", None) or getattr(meta, "title", None) or getattr(meta, "name", None) or "").strip()
+        if not raw_title:
+            return meta
+
+        rule = self._match_rule_by_title(raw_title)
+        if not rule:
+            return meta
+
+        source_season = self._extract_source_season(raw_title, meta, rule)
+        source_kind, override_index, override_target_episode = self._detect_source_kind(raw_title, rule, source_season)
+        if not source_kind:
+            return meta
+
+        issue_index = override_index if override_index is not None else self._extract_source_index(raw_title, meta, source_kind)
+        if issue_index is None and override_target_episode is None:
+            return meta
+
+        target_episode = override_target_episode
+        specials_season = int(rule.get("specials_season", 0))
+        if target_episode is None:
+            target_episode = self._resolve_target_episode(rule, source_kind, issue_index, source_season)
+        if not target_episode:
+            return meta
+
+        meta.type = MediaType.TV
+        meta.tmdbid = int(rule.get("tmdbid") or 0) or None
+        meta.begin_season = specials_season
+        meta.end_season = None
+        meta.total_season = 1
+        meta.begin_episode = int(target_episode)
+        meta.end_episode = None
+        meta.total_episode = 1
+        logger.info(
+            f"综艺特别篇识别预纠偏：{raw_title} -> tmdbid={meta.tmdbid}, S{specials_season:02d}E{int(target_episode):02d}"
+        )
+        return meta
 
     def _detect_source_kind(
         self,
