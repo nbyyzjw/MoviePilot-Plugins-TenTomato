@@ -18,7 +18,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.3.0"
+    plugin_version = "0.3.1"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -33,7 +33,7 @@ class VarietySpecialMapper(_PluginBase):
     _tmdb_mapping_cache: Dict[str, Dict[str, Dict[int, int]]] = {}
 
     TYPE_ORDER = ["pilot", "pure", "watch", "chat", "punish", "party", "bonus"]
-    UI_SCHEMA_VERSION = "interactive_v1"
+    UI_SCHEMA_VERSION = "interactive_v2"
 
     COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, List[str]]] = {
         "pilot": {
@@ -462,6 +462,9 @@ class VarietySpecialMapper(_PluginBase):
                 rules = self._normalize_rules(self._default_rules_data())
                 needs_persist = True
 
+        if config.get("ui_schema_version") != self.UI_SCHEMA_VERSION:
+            needs_persist = True
+
         return common_types, rules, needs_persist
 
     def _save_structured_config(self):
@@ -474,6 +477,7 @@ class VarietySpecialMapper(_PluginBase):
             "common_types_data": json.dumps(self._common_types, ensure_ascii=False, indent=2),
             "rules_data": json.dumps(self._rules, ensure_ascii=False, indent=2),
         }
+        desired.update(self._build_form_model())
         if any(current.get(key) != value for key, value in desired.items()) or set(current.keys()) != set(desired.keys()):
             self.update_config(desired)
             logger.info("已保存综艺特别篇纠偏插件的结构化规则配置")
