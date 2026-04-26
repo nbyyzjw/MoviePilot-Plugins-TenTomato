@@ -20,7 +20,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.3.2"
+    plugin_version = "0.4.0"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -36,8 +36,8 @@ class VarietySpecialMapper(_PluginBase):
     _original_recognize_media = None
     _original_async_recognize_media = None
 
-    TYPE_ORDER = ["pilot", "pure", "watch", "chat", "punish", "party", "bonus"]
-    UI_SCHEMA_VERSION = "interactive_v2"
+    TYPE_ORDER = ["pilot", "pure", "watch", "chat", "punish", "party", "bonus", "program", "egg", "plus"]
+    UI_SCHEMA_VERSION = "interactive_v3"
 
     COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, List[str]]] = {
         "pilot": {
@@ -122,6 +122,39 @@ class VarietySpecialMapper(_PluginBase):
                 ],
             }
         ]
+
+    @staticmethod
+    def _default_viva_la_romance_rule() -> Dict[str, Any]:
+        return {
+            "name": "妻子的浪漫旅行",
+            "tmdbid": 97199,
+            "match_titles": ["妻子的浪漫旅行", "Viva La Romance", "Viva.La.Romance"],
+            "main_season": 9,
+            "specials_season": 0,
+            "specials_folder": "Specials",
+            "seasons": [
+                {
+                    "source_season": 9,
+                    "tmdb_season_number": 8,
+                    "tmdb_season_matchers": ["2026"],
+                    "types": {
+                        "program": {
+                            "source_keywords": ["特别企划", "企划", ".Program.", "Program"],
+                            "tmdb_keywords": ["特别企划", "企划"],
+                        },
+                        "egg": {
+                            "source_keywords": ["超前彩蛋", ".Egg.", "Egg"],
+                            "tmdb_keywords": ["超前彩蛋"],
+                        },
+                        "plus": {
+                            "source_keywords": ["加更", ".Plus.", "Plus"],
+                            "tmdb_keywords": ["加更版", "Plus"],
+                        },
+                    },
+                    "manual_matches": [],
+                }
+            ],
+        }
 
     def init_plugin(self, config: dict = None):
         plugin_instance: "VarietySpecialMapper" = self
@@ -620,6 +653,13 @@ class VarietySpecialMapper(_PluginBase):
                 seasons.append(
                     {
                         "source_season": source_season,
+                        "tmdb_season_number": self._to_int(
+                            config.get(f"rule_{rule_index}_season_{season_index}_tmdb_season_number"),
+                            source_season,
+                        ) or source_season,
+                        "tmdb_season_matchers": self._split_multiline(
+                            config.get(f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text")
+                        ),
                         "types": season_types,
                         "manual_matches": self._parse_manual_matches_text(
                             config.get(f"rule_{rule_index}_season_{season_index}_manual_matches_text")
@@ -635,6 +675,8 @@ class VarietySpecialMapper(_PluginBase):
                 seasons.append(
                     {
                         "source_season": new_season_number,
+                        "tmdb_season_number": new_season_number,
+                        "tmdb_season_matchers": [],
                         "types": {},
                         "manual_matches": [],
                     }
@@ -642,7 +684,8 @@ class VarietySpecialMapper(_PluginBase):
 
             seasons = sorted(seasons, key=lambda item: int(item.get("source_season") or 0))
             if not seasons:
-                seasons = [{"source_season": int(config.get(f"rule_{rule_index}_main_season") or 1), "types": {}, "manual_matches": []}]
+                main_season = int(config.get(f"rule_{rule_index}_main_season") or 1)
+                seasons = [{"source_season": main_season, "tmdb_season_number": main_season, "tmdb_season_matchers": [], "types": {}, "manual_matches": []}]
 
             rules.append(
                 {
@@ -674,7 +717,7 @@ class VarietySpecialMapper(_PluginBase):
                     "specials_season": self._to_int(config.get("new_rule_specials_season"), 0) or 0,
                     "specials_folder": str(config.get("new_rule_specials_folder") or self._specials_folder or "Specials").strip() or "Specials",
                     "seasons": [
-                        {"source_season": season_number, "types": {}, "manual_matches": []}
+                        {"source_season": season_number, "tmdb_season_number": season_number, "tmdb_season_matchers": [], "types": {}, "manual_matches": []}
                         for season_number in sorted(set(parsed_seasons))
                     ],
                 }
@@ -706,6 +749,8 @@ class VarietySpecialMapper(_PluginBase):
                 seasons_raw = [
                     {
                         "source_season": self._to_int(raw_rule.get("main_season"), 1) or 1,
+                        "tmdb_season_number": self._to_int(raw_rule.get("main_season"), 1) or 1,
+                        "tmdb_season_matchers": [],
                         "types": legacy_types,
                         "manual_matches": legacy_manual_matches,
                     }
@@ -716,7 +761,21 @@ class VarietySpecialMapper(_PluginBase):
                 if not isinstance(season_rule, dict):
                     continue
                 source_season = self._to_int(season_rule.get("source_season"), self._to_int(raw_rule.get("main_season"), 1)) or 1
-                current = season_map.get(source_season, {"source_season": source_season, "types": {}, "manual_matches": []})
+                current = season_map.get(
+                    source_season,
+                    {
+                        "source_season": source_season,
+                        "tmdb_season_number": source_season,
+                        "tmdb_season_matchers": [],
+                        "types": {},
+                        "manual_matches": [],
+                    },
+                )
+                current["tmdb_season_number"] = self._to_int(season_rule.get("tmdb_season_number"), source_season) or source_season
+                current["tmdb_season_matchers"] = self._dedupe_list(
+                    (current.get("tmdb_season_matchers") or [])
+                    + self._split_multiline(season_rule.get("tmdb_season_matchers") or [])
+                )
                 current["types"].update(self._normalize_types_map(season_rule.get("types") or {}))
                 current["manual_matches"] = self._normalize_manual_matches(current.get("manual_matches") or []) + self._normalize_manual_matches(season_rule.get("manual_matches") or [])
                 season_map[source_season] = current
@@ -735,6 +794,8 @@ class VarietySpecialMapper(_PluginBase):
                 self._patch_amazing_night_rule(rule)
 
             normalized_rules.append(rule)
+
+        normalized_rules = self._ensure_builtin_rules(normalized_rules)
 
         return normalized_rules
 
@@ -755,10 +816,40 @@ class VarietySpecialMapper(_PluginBase):
         for season_rule in rule.get("seasons") or []:
             if int(season_rule.get("source_season") or 0) == int(source_season):
                 return season_rule
-        season_rule = {"source_season": int(source_season), "types": {}, "manual_matches": []}
+        season_rule = {"source_season": int(source_season), "tmdb_season_number": int(source_season), "tmdb_season_matchers": [], "types": {}, "manual_matches": []}
         rule.setdefault("seasons", []).append(season_rule)
         rule["seasons"] = sorted(rule.get("seasons") or [], key=lambda item: int(item.get("source_season") or 0))
         return season_rule
+
+    def _ensure_builtin_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        has_viva = False
+        for rule in rules:
+            if rule.get("name") == "妻子的浪漫旅行" or int(rule.get("tmdbid") or 0) == 97199:
+                self._patch_viva_la_romance_rule(rule)
+                has_viva = True
+                break
+        if not has_viva:
+            rules.append(self._normalize_rules([self._default_viva_la_romance_rule()])[0])
+        return rules
+
+    def _patch_viva_la_romance_rule(self, rule: Dict[str, Any]):
+        season_nine = self._get_or_create_season_rule(rule, 9)
+        season_nine["tmdb_season_number"] = 8
+        season_nine["tmdb_season_matchers"] = self._dedupe_list((season_nine.get("tmdb_season_matchers") or []) + ["2026"])
+
+        season_nine.setdefault("types", {}).setdefault("bonus", {"source_keywords": [], "tmdb_keywords": []})
+
+        program = season_nine.setdefault("types", {}).setdefault("program", {"source_keywords": [], "tmdb_keywords": []})
+        program["source_keywords"] = self._dedupe_list((program.get("source_keywords") or []) + ["特别企划", "企划", ".Program.", "Program"])
+        program["tmdb_keywords"] = self._dedupe_list((program.get("tmdb_keywords") or []) + ["特别企划", "企划"])
+
+        egg = season_nine.setdefault("types", {}).setdefault("egg", {"source_keywords": [], "tmdb_keywords": []})
+        egg["source_keywords"] = self._dedupe_list((egg.get("source_keywords") or []) + ["超前彩蛋", ".Egg.", "Egg"])
+        egg["tmdb_keywords"] = self._dedupe_list((egg.get("tmdb_keywords") or []) + ["超前彩蛋"])
+
+        plus = season_nine.setdefault("types", {}).setdefault("plus", {"source_keywords": [], "tmdb_keywords": []})
+        plus["source_keywords"] = self._dedupe_list((plus.get("source_keywords") or []) + ["加更", ".Plus.", "Plus"])
+        plus["tmdb_keywords"] = self._dedupe_list((plus.get("tmdb_keywords") or []) + ["加更版", "Plus"])
 
     @staticmethod
     def _normalize_type_conf(type_conf: Dict[str, Any]) -> Dict[str, List[str]]:
@@ -879,13 +970,31 @@ class VarietySpecialMapper(_PluginBase):
         if match:
             return int(match.group(1))
 
-        season_match = re.search(r"第\s*(\d{1,2})\s*季", file_name)
+        season_match = re.search(r"第\s*([0-9一二三四五六七八九十两零〇]{1,4})\s*季", file_name)
         if season_match:
-            return int(season_match.group(1))
+            return self._parse_int_token(season_match.group(1)) or int(rule.get("main_season") or 1)
 
         season = getattr(meta, "begin_season", None) if meta else None
         if season is not None:
             return int(season)
+        return int(rule.get("main_season") or 1)
+
+    def _resolve_mapping_source_season(self, rule: Dict[str, Any], title: str) -> int:
+        lowered = (title or "").lower()
+        for season_rule in rule.get("seasons") or []:
+            matchers = [str(item).lower() for item in (season_rule.get("tmdb_season_matchers") or [])]
+            if matchers and any(item in lowered for item in matchers):
+                return int(season_rule.get("source_season") or rule.get("main_season") or 1)
+
+        season_match = re.search(r"第\s*([0-9一二三四五六七八九十两零〇]{1,4})\s*季", title)
+        if season_match:
+            tmdb_season_number = self._parse_int_token(season_match.group(1))
+            if tmdb_season_number is not None:
+                for season_rule in rule.get("seasons") or []:
+                    if int(season_rule.get("tmdb_season_number") or season_rule.get("source_season") or 0) == tmdb_season_number:
+                        return int(season_rule.get("source_season") or tmdb_season_number)
+                return tmdb_season_number
+
         return int(rule.get("main_season") or 1)
 
     def _extract_source_index(self, file_name: str, meta: Any, source_kind: str) -> Optional[int]:
@@ -899,9 +1008,11 @@ class VarietySpecialMapper(_PluginBase):
                 return 1
             return value
 
-        cn_match = re.search(r"第\s*(\d{1,3})\s*期", file_name)
+        cn_match = re.search(r"第\s*([0-9一二三四五六七八九十两零〇]{1,4})\s*期", file_name)
         if cn_match:
-            return int(cn_match.group(1))
+            parsed = self._parse_int_token(cn_match.group(1))
+            if parsed is not None:
+                return parsed
 
         episode = getattr(meta, "begin_episode", None) if meta else None
         if episode is not None:
@@ -942,8 +1053,7 @@ class VarietySpecialMapper(_PluginBase):
 
         for episode in sorted(episodes, key=lambda item: getattr(item, "episode_number", 0) or 0):
             title = getattr(episode, "name", "") or ""
-            season_match = re.search(r"第\s*(\d{1,2})\s*季", title)
-            mapping_season = int(season_match.group(1)) if season_match else int(rule.get("main_season") or 1)
+            mapping_season = self._resolve_mapping_source_season(rule, title)
             season_types = self._get_season_types(rule, mapping_season)
             kind, _, _ = self._detect_kind_from_keywords(
                 lowered=title.lower(),
@@ -954,9 +1064,9 @@ class VarietySpecialMapper(_PluginBase):
                 continue
 
             counter_key = (mapping_season, kind)
-            issue_match = re.search(r"第\s*(\d{1,3})\s*期", title)
+            issue_match = re.search(r"第\s*([0-9一二三四五六七八九十两零〇]{1,4})\s*期", title)
             if issue_match:
-                issue_index = int(issue_match.group(1))
+                issue_index = self._parse_int_token(issue_match.group(1)) or 1
                 fallback_counter[counter_key] = max(fallback_counter.get(counter_key, 0), issue_index)
             else:
                 fallback_counter[counter_key] = fallback_counter.get(counter_key, 0) + 1
@@ -979,11 +1089,17 @@ class VarietySpecialMapper(_PluginBase):
         all_type_keys = self._get_all_type_keys(self._common_types, [rule])
         for type_key in all_type_keys:
             common_conf = self._normalize_type_conf(self._common_types.get(type_key) or {})
-            specific_conf = specific_types.get(type_key) or {}
-            merged[type_key] = {
-                "source_keywords": specific_conf.get("source_keywords") or common_conf.get("source_keywords") or [],
-                "tmdb_keywords": specific_conf.get("tmdb_keywords") or common_conf.get("tmdb_keywords") or [],
-            }
+            if type_key in specific_types:
+                specific_conf = specific_types.get(type_key) or {}
+                merged[type_key] = {
+                    "source_keywords": specific_conf.get("source_keywords") or [],
+                    "tmdb_keywords": specific_conf.get("tmdb_keywords") or [],
+                }
+            else:
+                merged[type_key] = {
+                    "source_keywords": common_conf.get("source_keywords") or [],
+                    "tmdb_keywords": common_conf.get("tmdb_keywords") or [],
+                }
         return merged
 
     def _find_season_rule(self, rule: Dict[str, Any], source_season: int) -> Optional[Dict[str, Any]]:
@@ -1128,6 +1244,12 @@ class VarietySpecialMapper(_PluginBase):
 
             for season_index, season_rule in enumerate(rule.get("seasons") or []):
                 model[f"rule_{rule_index}_season_{season_index}_number"] = int(season_rule.get("source_season") or 1)
+                model[f"rule_{rule_index}_season_{season_index}_tmdb_season_number"] = int(
+                    season_rule.get("tmdb_season_number") or season_rule.get("source_season") or 1
+                )
+                model[f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text"] = self._join_multiline(
+                    season_rule.get("tmdb_season_matchers") or []
+                )
                 model[f"rule_{rule_index}_season_{season_index}_delete"] = False
                 model[f"rule_{rule_index}_season_{season_index}_manual_matches_text"] = json.dumps(
                     season_rule.get("manual_matches") or [],
@@ -1368,7 +1490,22 @@ class VarietySpecialMapper(_PluginBase):
                                 },
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 8},
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_season_{season_index}_tmdb_season_number",
+                                                "label": "TMDB 正片季号",
+                                                "type": "number",
+                                                "hint": "源文件季号和 TMDB 实际季号不一致时，在这里填 TMDB 的正片季号。",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
                                     "content": [
                                         {
                                             "component": "VSwitch",
@@ -1380,6 +1517,28 @@ class VarietySpecialMapper(_PluginBase):
                                         }
                                     ],
                                 },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12},
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text",
+                                                "label": "TMDB 季识别关键词（可选）",
+                                                "rows": 2,
+                                                "autoGrow": True,
+                                                "placeholder": "每行一个，例如\n2026\n春游篇\n第八季",
+                                                "hint": "TMDB 特别篇标题不写第几季时，可以用年份或固定文案把它归到这个来源季。",
+                                            },
+                                        }
+                                    ],
+                                }
                             ],
                         },
                         {
@@ -1649,6 +1808,9 @@ class VarietySpecialMapper(_PluginBase):
             "punish": "惩罚室",
             "party": "聚会 / 派对 / 游戏",
             "bonus": "彩蛋 / 加更 / 企划 / 特辑",
+            "program": "企划 / 特别企划",
+            "egg": "超前彩蛋",
+            "plus": "加更 / Plus",
         }
         return labels.get(type_key, type_key)
 
@@ -1667,6 +1829,41 @@ class VarietySpecialMapper(_PluginBase):
                     if type_key not in ordered:
                         ordered.append(type_key)
         return ordered
+
+    @staticmethod
+    def _parse_int_token(value: Any) -> Optional[int]:
+        raw = str(value or "").strip()
+        if not raw:
+            return None
+        if raw.isdigit():
+            return int(raw)
+
+        mapping = {
+            "零": 0,
+            "〇": 0,
+            "一": 1,
+            "二": 2,
+            "两": 2,
+            "三": 3,
+            "四": 4,
+            "五": 5,
+            "六": 6,
+            "七": 7,
+            "八": 8,
+            "九": 9,
+        }
+
+        if raw == "十":
+            return 10
+        if raw.startswith("十") and len(raw) == 2:
+            return 10 + mapping.get(raw[1], 0)
+        if raw.endswith("十") and len(raw) == 2:
+            return mapping.get(raw[0], 0) * 10
+        if "十" in raw and len(raw) == 3:
+            return mapping.get(raw[0], 0) * 10 + mapping.get(raw[2], 0)
+        if raw in mapping:
+            return mapping[raw]
+        return None
 
     @staticmethod
     def _split_multiline(value: Any) -> List[str]:
