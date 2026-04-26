@@ -1,3 +1,4 @@
+import copy
 import json
 import re
 import shutil
@@ -17,7 +18,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.2.1"
+    plugin_version = "0.3.0"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -27,11 +28,14 @@ class VarietySpecialMapper(_PluginBase):
     _enabled = False
     _notify = False
     _specials_folder = "Specials"
-    _rules_text = ""
     _rules: List[Dict[str, Any]] = []
+    _common_types: Dict[str, Dict[str, List[str]]] = {}
     _tmdb_mapping_cache: Dict[str, Dict[str, Dict[int, int]]] = {}
 
-    COMMON_TYPES: Dict[str, Dict[str, List[str]]] = {
+    TYPE_ORDER = ["pilot", "pure", "watch", "chat", "punish", "party", "bonus"]
+    UI_SCHEMA_VERSION = "interactive_v1"
+
+    COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, List[str]]] = {
         "pilot": {
             "source_keywords": ["先导", "先导片", "抢先看", "开放日", "集结篇"],
             "tmdb_keywords": ["先导", "先导片", "开放日", "集结篇"],
@@ -62,63 +66,72 @@ class VarietySpecialMapper(_PluginBase):
         },
     }
 
+    @classmethod
+    def _default_common_types(cls) -> Dict[str, Dict[str, List[str]]]:
+        return copy.deepcopy(cls.COMMON_TYPES_TEMPLATE)
+
     @staticmethod
-    def _default_rules_text() -> str:
-        return json.dumps(
-            [
-                {
-                    "name": "喜人奇妙夜",
-                    "tmdbid": 257161,
-                    "match_titles": ["喜人奇妙夜", "Amazing Night", "Amazing.Night"],
-                    "main_season": 1,
-                    "specials_season": 0,
-                    "specials_folder": "Specials",
-                    "types": {
-                        "pilot": {
-                            "source_keywords": ["先导", "S01E00"],
-                            "tmdb_keywords": ["先导", "超前集结"]
+    def _default_rules_data() -> List[Dict[str, Any]]:
+        return [
+            {
+                "name": "喜人奇妙夜",
+                "tmdbid": 257161,
+                "match_titles": ["喜人奇妙夜", "Amazing Night", "Amazing.Night"],
+                "main_season": 1,
+                "specials_season": 0,
+                "specials_folder": "Specials",
+                "seasons": [
+                    {
+                        "source_season": 1,
+                        "types": {
+                            "pilot": {
+                                "source_keywords": ["先导", "S01E00"],
+                                "tmdb_keywords": ["先导", "超前集结"],
+                            },
+                            "pure": {
+                                "source_keywords": ["纯享", ".Pure."],
+                                "tmdb_keywords": ["纯享"],
+                            },
+                            "watch": {
+                                "source_keywords": ["陪看", ".Watch."],
+                                "tmdb_keywords": ["陪看"],
+                            },
+                            "chat": {
+                                "source_keywords": ["夜聊", ".Chat."],
+                                "tmdb_keywords": ["夜聊"],
+                            },
+                            "punish": {
+                                "source_keywords": ["惩罚室", ".Punish."],
+                                "tmdb_keywords": ["惩罚室", "不好笑惩罚室"],
+                            },
+                            "party": {
+                                "source_keywords": ["聚会", "派对", ".Party."],
+                                "tmdb_keywords": ["聚会", "派对"],
+                            },
+                            "bonus": {
+                                "source_keywords": ["彩蛋", ".Bonus."],
+                                "tmdb_keywords": ["特辑"],
+                            },
                         },
-                        "pure": {
-                            "source_keywords": ["纯享", ".Pure."],
-                            "tmdb_keywords": ["纯享"]
-                        },
-                        "watch": {
-                            "source_keywords": ["陪看", ".Watch."],
-                            "tmdb_keywords": ["陪看"]
-                        },
-                        "chat": {
-                            "source_keywords": ["夜聊", ".Chat."],
-                            "tmdb_keywords": ["夜聊"]
-                        },
-                        "punish": {
-                            "source_keywords": ["惩罚室", ".Punish."],
-                            "tmdb_keywords": ["惩罚室", "不好笑惩罚室"]
-                        },
-                        "party": {
-                            "source_keywords": ["聚会", "派对", ".Party."],
-                            "tmdb_keywords": ["聚会", "派对"]
-                        },
-                        "bonus": {
-                            "source_keywords": ["彩蛋", ".Bonus."],
-                            "tmdb_keywords": ["特辑"]
-                        }
-                    },
-                    "manual_matches": []
-                }
-            ],
-            ensure_ascii=False,
-            indent=2,
-        )
+                        "manual_matches": [],
+                    }
+                ],
+            }
+        ]
 
     def init_plugin(self, config: dict = None):
         config = config or {}
         self._enabled = bool(config.get("enabled", False))
         self._notify = bool(config.get("notify", False))
         self._specials_folder = (config.get("specials_folder") or "Specials").strip() or "Specials"
-        self._rules_text = config.get("rules_text") or self._default_rules_text()
-        self._rules_text = self._migrate_rules_text(self._rules_text)
-        self._rules = self._parse_rules(self._rules_text)
+
+        common_types, rules, needs_persist = self._load_structured_state(config)
+        self._common_types = common_types
+        self._rules = rules
         self._tmdb_mapping_cache = {}
+
+        if needs_persist:
+            self._save_structured_config()
 
     def get_state(self) -> bool:
         return self._enabled
@@ -131,6 +144,10 @@ class VarietySpecialMapper(_PluginBase):
         return []
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
+        model = self._build_form_model()
+        type_keys = self._get_all_type_keys(self._common_types, self._rules)
+        show_panels = [self._build_rule_panel(rule_index, rule, type_keys) for rule_index, rule in enumerate(self._rules)]
+
         return [
             {
                 "component": "VForm",
@@ -146,10 +163,10 @@ class VarietySpecialMapper(_PluginBase):
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "enabled",
-                                            "label": "启用插件"
-                                        }
+                                            "label": "启用插件",
+                                        },
                                     }
-                                ]
+                                ],
                             },
                             {
                                 "component": "VCol",
@@ -159,16 +176,11 @@ class VarietySpecialMapper(_PluginBase):
                                         "component": "VSwitch",
                                         "props": {
                                             "model": "notify",
-                                            "label": "发送纠偏通知"
-                                        }
+                                            "label": "发送纠偏通知",
+                                        },
                                     }
-                                ]
-                            }
-                        ]
-                    },
-                    {
-                        "component": "VRow",
-                        "content": [
+                                ],
+                            },
                             {
                                 "component": "VCol",
                                 "props": {"cols": 12, "md": 4},
@@ -177,13 +189,13 @@ class VarietySpecialMapper(_PluginBase):
                                         "component": "VTextField",
                                         "props": {
                                             "model": "specials_folder",
-                                            "label": "特别篇目录名",
-                                            "placeholder": "Specials"
-                                        }
+                                            "label": "默认特别篇目录名",
+                                            "placeholder": "Specials",
+                                        },
                                     }
-                                ]
-                            }
-                        ]
+                                ],
+                            },
+                        ],
                     },
                     {
                         "component": "VRow",
@@ -197,42 +209,69 @@ class VarietySpecialMapper(_PluginBase):
                                         "props": {
                                             "type": "info",
                                             "variant": "tonal",
-                                            "text": "插件在整理完成事件触发后，把识别到的综艺彩蛋内容移动到 Specials 目录并改成 S00E??，随后让 MoviePilot 正常按 TMDB 刮削。默认已内置《喜人奇妙夜》示例规则。"
-                                        }
+                                            "title": "交互式规则管理",
+                                            "text": "不再需要直接改 JSON。现在按 通用关键词库 -> 节目 -> 季 -> 类型 的树状折叠结构管理。关键词建议每行一个，保存配置后立即生效。新增或删除节目/季时，勾选对应开关再点保存。",
+                                        },
                                     }
-                                ]
+                                ],
                             }
-                        ]
+                        ],
                     },
                     {
-                        "component": "VRow",
+                        "component": "VExpansionPanels",
+                        "props": {"multiple": True, "popout": True},
                         "content": [
                             {
-                                "component": "VCol",
-                                "props": {"cols": 12},
+                                "component": "VExpansionPanel",
                                 "content": [
                                     {
-                                        "component": "VTextarea",
-                                        "props": {
-                                            "model": "rules_text",
-                                            "label": "规则 JSON",
-                                            "rows": 18,
-                                            "autoGrow": True,
-                                            "placeholder": "填写规则 JSON"
-                                        }
-                                    }
-                                ]
-                            }
-                        ]
-                    }
-                ]
+                                        "component": "VExpansionPanelTitle",
+                                        "text": "通用关键词库",
+                                    },
+                                    {
+                                        "component": "VExpansionPanelText",
+                                        "content": [
+                                            {
+                                                "component": "VExpansionPanels",
+                                                "props": {"multiple": True, "popout": True},
+                                                "content": [
+                                                    self._build_type_panel(
+                                                        title=self._type_label(type_key),
+                                                        source_model=f"common_type_{type_key}_source_keywords_text",
+                                                        tmdb_model=f"common_type_{type_key}_tmdb_keywords_text",
+                                                    )
+                                                    for type_key in type_keys
+                                                ],
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "component": "VExpansionPanel",
+                                "content": [
+                                    {
+                                        "component": "VExpansionPanelTitle",
+                                        "text": f"节目规则（{len(self._rules)}）",
+                                    },
+                                    {
+                                        "component": "VExpansionPanelText",
+                                        "content": [
+                                            {
+                                                "component": "VExpansionPanels",
+                                                "props": {"multiple": True, "popout": True},
+                                                "content": show_panels
+                                                + [self._build_new_rule_panel()],
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                        ],
+                    },
+                ],
             }
-        ], {
-            "enabled": self._enabled,
-            "notify": self._notify,
-            "specials_folder": self._specials_folder,
-            "rules_text": self._rules_text,
-        }
+        ], model
 
     def get_page(self) -> List[dict]:
         history = self.get_data("history") or []
@@ -244,8 +283,8 @@ class VarietySpecialMapper(_PluginBase):
                     "type": "info",
                     "variant": "tonal",
                     "title": "最近纠偏记录",
-                    "text": "这里只展示最近 10 条记录，便于排查规则是否命中。"
-                }
+                    "text": "这里只展示最近 10 条记录，便于排查规则是否命中。",
+                },
             }
         ]
         if not history:
@@ -256,9 +295,9 @@ class VarietySpecialMapper(_PluginBase):
                     "content": [
                         {
                             "component": "VCardText",
-                            "text": "还没有纠偏记录。"
+                            "text": "还没有纠偏记录。",
                         }
-                    ]
+                    ],
                 }
             )
             return content
@@ -273,8 +312,11 @@ class VarietySpecialMapper(_PluginBase):
                         {"component": "VCardText", "text": f"类型: {item.get('kind')}"},
                         {"component": "VCardText", "text": f"原路径: {item.get('old_path')}"},
                         {"component": "VCardText", "text": f"新路径: {item.get('new_path')}"},
-                        {"component": "VCardText", "text": f"目标集: S{int(item.get('target_season', 0)):02d}E{int(item.get('target_episode', 0)):02d}"},
-                    ]
+                        {
+                            "component": "VCardText",
+                            "text": f"目标集: S{int(item.get('target_season', 0)):02d}E{int(item.get('target_episode', 0)):02d}",
+                        },
+                    ],
                 }
             )
         return content
@@ -319,12 +361,20 @@ class VarietySpecialMapper(_PluginBase):
         if not rule:
             return
 
-        source_kind, override_index, override_target_episode = self._detect_source_kind(source_name or file_path.name, rule)
+        source_season = self._extract_source_season(source_name or file_path.name, meta, rule)
+        source_kind, override_index, override_target_episode = self._detect_source_kind(
+            source_name or file_path.name,
+            rule,
+            source_season,
+        )
         if not source_kind:
             return
 
-        source_season = self._extract_source_season(source_name or file_path.name, meta, rule)
-        issue_index = override_index if override_index is not None else self._extract_source_index(source_name or file_path.name, meta, source_kind)
+        issue_index = override_index if override_index is not None else self._extract_source_index(
+            source_name or file_path.name,
+            meta,
+            source_kind,
+        )
         if issue_index is None and override_target_episode is None:
             logger.info(f"{file_path.name} 未提取到期数，跳过纠偏")
             return
@@ -387,68 +437,283 @@ class VarietySpecialMapper(_PluginBase):
                     text=f"{new_name}\n已纠偏到 {specials_folder_name}/S{specials_season:02d}E{int(target_episode):02d}",
                 )
 
-    def _parse_rules(self, text: str) -> List[Dict[str, Any]]:
-        if not text:
-            return []
-        try:
-            data = json.loads(text)
-            return data if isinstance(data, list) else []
-        except Exception as err:
-            logger.error(f"解析综艺特别篇规则失败：{err}")
-            return []
+    def _load_structured_state(self, config: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, List[str]]], List[Dict[str, Any]], bool]:
+        needs_persist = False
 
-    def _migrate_rules_text(self, text: str) -> str:
-        migrated = text
-        changed = False
+        if self._looks_like_interactive_form_submit(config):
+            common_types, rules = self._parse_interactive_form_config(config)
+            return common_types, rules, True
+
+        common_types_raw = config.get("common_types_data")
+        if isinstance(common_types_raw, dict):
+            common_types = self._normalize_common_types(common_types_raw)
+        else:
+            common_types = self._normalize_common_types(self._load_json_data(common_types_raw, self._default_common_types()))
+
+        rules_raw = config.get("rules_data")
+        if rules_raw:
+            rules = self._normalize_rules(self._load_json_data(rules_raw, self._default_rules_data()))
+        else:
+            legacy_rules_text = config.get("rules_text")
+            if legacy_rules_text:
+                rules = self._normalize_rules(self._load_json_data(legacy_rules_text, self._default_rules_data()))
+                needs_persist = True
+            else:
+                rules = self._normalize_rules(self._default_rules_data())
+                needs_persist = True
+
+        return common_types, rules, needs_persist
+
+    def _save_structured_config(self):
+        current = self.get_config() or {}
+        desired = {
+            "enabled": self._enabled,
+            "notify": self._notify,
+            "specials_folder": self._specials_folder,
+            "ui_schema_version": self.UI_SCHEMA_VERSION,
+            "common_types_data": json.dumps(self._common_types, ensure_ascii=False, indent=2),
+            "rules_data": json.dumps(self._rules, ensure_ascii=False, indent=2),
+        }
+        if any(current.get(key) != value for key, value in desired.items()) or set(current.keys()) != set(desired.keys()):
+            self.update_config(desired)
+            logger.info("已保存综艺特别篇纠偏插件的结构化规则配置")
+
+    @staticmethod
+    def _load_json_data(raw: Any, fallback: Any) -> Any:
+        if raw is None:
+            return copy.deepcopy(fallback)
+        if isinstance(raw, (dict, list)):
+            return copy.deepcopy(raw)
         try:
-            data = json.loads(text)
+            return json.loads(raw)
         except Exception:
-            return text
+            return copy.deepcopy(fallback)
 
-        if not isinstance(data, list):
-            return text
+    def _looks_like_interactive_form_submit(self, config: Dict[str, Any]) -> bool:
+        return any(
+            key.startswith("common_type_") or key.startswith("rule_") or key.startswith("new_rule_")
+            for key in config.keys()
+        )
 
-        for rule in data:
-            if not isinstance(rule, dict):
+    def _parse_interactive_form_config(self, config: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, List[str]]], List[Dict[str, Any]]]:
+        current_rules = self._normalize_rules(self._rules or self._default_rules_data())
+        common_types: Dict[str, Dict[str, List[str]]] = {}
+        type_keys = self._get_all_type_keys(self._common_types or self._default_common_types(), current_rules)
+
+        for type_key in type_keys:
+            common_types[type_key] = {
+                "source_keywords": self._split_multiline(config.get(f"common_type_{type_key}_source_keywords_text")),
+                "tmdb_keywords": self._split_multiline(config.get(f"common_type_{type_key}_tmdb_keywords_text")),
+            }
+
+        rules: List[Dict[str, Any]] = []
+        for rule_index in range(len(current_rules)):
+            name = str(config.get(f"rule_{rule_index}_name") or "").strip()
+            tmdbid = self._to_int(config.get(f"rule_{rule_index}_tmdbid"))
+            if not name or not tmdbid:
                 continue
-            if rule.get("name") != "喜人奇妙夜":
+            if bool(config.get(f"rule_{rule_index}_delete")):
                 continue
-            if int(rule.get("tmdbid") or 0) == 257971:
-                rule["tmdbid"] = 257161
-                changed = True
 
-            types = rule.setdefault("types", {})
-            party = types.setdefault("party", {})
-            party_keywords = set(party.get("source_keywords") or [])
-            party_tmdb_keywords = set(party.get("tmdb_keywords") or [])
-            if "派对" not in party_keywords:
-                party_keywords.add("派对")
-                changed = True
-            if "派对" not in party_tmdb_keywords:
-                party_tmdb_keywords.add("派对")
-                changed = True
-            party["source_keywords"] = list(party_keywords)
-            party["tmdb_keywords"] = list(party_tmdb_keywords or {"聚会", "派对"})
+            seasons: List[Dict[str, Any]] = []
+            season_count = len(current_rules[rule_index].get("seasons") or [])
+            for season_index in range(season_count):
+                source_season = self._to_int(config.get(f"rule_{rule_index}_season_{season_index}_number"))
+                if not source_season:
+                    continue
+                if bool(config.get(f"rule_{rule_index}_season_{season_index}_delete")):
+                    continue
 
-            if "bonus" not in types:
-                types["bonus"] = {
-                    "source_keywords": ["彩蛋", ".Bonus."],
-                    "tmdb_keywords": ["特辑"],
-                }
-                changed = True
+                season_types: Dict[str, Dict[str, List[str]]] = {}
+                for type_key in type_keys:
+                    source_keywords = self._split_multiline(
+                        config.get(f"rule_{rule_index}_season_{season_index}_type_{type_key}_source_keywords_text")
+                    )
+                    tmdb_keywords = self._split_multiline(
+                        config.get(f"rule_{rule_index}_season_{season_index}_type_{type_key}_tmdb_keywords_text")
+                    )
+                    if source_keywords or tmdb_keywords:
+                        season_types[type_key] = {
+                            "source_keywords": source_keywords,
+                            "tmdb_keywords": tmdb_keywords,
+                        }
 
-        if changed:
-            migrated = json.dumps(data, ensure_ascii=False, indent=2)
-            self.update_config(
+                seasons.append(
+                    {
+                        "source_season": source_season,
+                        "types": season_types,
+                        "manual_matches": self._parse_manual_matches_text(
+                            config.get(f"rule_{rule_index}_season_{season_index}_manual_matches_text")
+                        ),
+                    }
+                )
+
+            add_new_season = bool(config.get(f"rule_{rule_index}_add_new_season"))
+            new_season_number = self._to_int(config.get(f"rule_{rule_index}_new_season_number"))
+            if add_new_season and new_season_number and new_season_number not in {
+                int(item.get("source_season") or 0) for item in seasons
+            }:
+                seasons.append(
+                    {
+                        "source_season": new_season_number,
+                        "types": {},
+                        "manual_matches": [],
+                    }
+                )
+
+            seasons = sorted(seasons, key=lambda item: int(item.get("source_season") or 0))
+            if not seasons:
+                seasons = [{"source_season": int(config.get(f"rule_{rule_index}_main_season") or 1), "types": {}, "manual_matches": []}]
+
+            rules.append(
                 {
-                    "enabled": self._enabled,
-                    "notify": self._notify,
-                    "specials_folder": self._specials_folder,
-                    "rules_text": migrated,
+                    "name": name,
+                    "tmdbid": tmdbid,
+                    "match_titles": self._split_multiline(config.get(f"rule_{rule_index}_match_titles_text")),
+                    "main_season": self._to_int(config.get(f"rule_{rule_index}_main_season")) or int(seasons[0]["source_season"]),
+                    "specials_season": self._to_int(config.get(f"rule_{rule_index}_specials_season"), 0) or 0,
+                    "specials_folder": str(config.get(f"rule_{rule_index}_specials_folder") or self._specials_folder or "Specials").strip() or "Specials",
+                    "seasons": seasons,
                 }
             )
-            logger.info("已自动迁移综艺特别篇纠偏插件旧规则到新格式")
-        return migrated
+
+        create_new_rule = bool(config.get("new_rule_create"))
+        new_rule_name = str(config.get("new_rule_name") or "").strip()
+        new_rule_tmdbid = self._to_int(config.get("new_rule_tmdbid"))
+        if create_new_rule and new_rule_name and new_rule_tmdbid:
+            initial_seasons = self._split_multiline(config.get("new_rule_initial_seasons_text"))
+            parsed_seasons = [self._to_int(item) for item in initial_seasons]
+            parsed_seasons = [item for item in parsed_seasons if item]
+            if not parsed_seasons:
+                parsed_seasons = [self._to_int(config.get("new_rule_main_season")) or 1]
+            rules.append(
+                {
+                    "name": new_rule_name,
+                    "tmdbid": new_rule_tmdbid,
+                    "match_titles": self._split_multiline(config.get("new_rule_match_titles_text")),
+                    "main_season": self._to_int(config.get("new_rule_main_season")) or parsed_seasons[0],
+                    "specials_season": self._to_int(config.get("new_rule_specials_season"), 0) or 0,
+                    "specials_folder": str(config.get("new_rule_specials_folder") or self._specials_folder or "Specials").strip() or "Specials",
+                    "seasons": [
+                        {"source_season": season_number, "types": {}, "manual_matches": []}
+                        for season_number in sorted(set(parsed_seasons))
+                    ],
+                }
+            )
+
+        return self._normalize_common_types(common_types), self._normalize_rules(rules)
+
+    def _normalize_common_types(self, common_types: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
+        normalized = self._default_common_types()
+        for type_key, type_conf in (common_types or {}).items():
+            normalized[type_key] = self._normalize_type_conf(type_conf)
+        return {key: normalized[key] for key in self._get_all_type_keys(normalized, [])}
+
+    def _normalize_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized_rules: List[Dict[str, Any]] = []
+        for raw_rule in rules or []:
+            if not isinstance(raw_rule, dict):
+                continue
+
+            name = str(raw_rule.get("name") or "").strip()
+            tmdbid = self._to_int(raw_rule.get("tmdbid"))
+            if not name or not tmdbid:
+                continue
+
+            legacy_types = raw_rule.get("types") or {}
+            legacy_manual_matches = raw_rule.get("manual_matches") or []
+            seasons_raw = raw_rule.get("seasons") or []
+            if not seasons_raw:
+                seasons_raw = [
+                    {
+                        "source_season": self._to_int(raw_rule.get("main_season"), 1) or 1,
+                        "types": legacy_types,
+                        "manual_matches": legacy_manual_matches,
+                    }
+                ]
+
+            season_map: Dict[int, Dict[str, Any]] = {}
+            for season_rule in seasons_raw:
+                if not isinstance(season_rule, dict):
+                    continue
+                source_season = self._to_int(season_rule.get("source_season"), self._to_int(raw_rule.get("main_season"), 1)) or 1
+                current = season_map.get(source_season, {"source_season": source_season, "types": {}, "manual_matches": []})
+                current["types"].update(self._normalize_types_map(season_rule.get("types") or {}))
+                current["manual_matches"] = self._normalize_manual_matches(current.get("manual_matches") or []) + self._normalize_manual_matches(season_rule.get("manual_matches") or [])
+                season_map[source_season] = current
+
+            rule = {
+                "name": name,
+                "tmdbid": 257161 if tmdbid == 257971 and name == "喜人奇妙夜" else tmdbid,
+                "match_titles": self._split_multiline(raw_rule.get("match_titles") or []),
+                "main_season": self._to_int(raw_rule.get("main_season"), 1) or 1,
+                "specials_season": self._to_int(raw_rule.get("specials_season"), 0) or 0,
+                "specials_folder": str(raw_rule.get("specials_folder") or self._specials_folder or "Specials").strip() or "Specials",
+                "seasons": sorted(season_map.values(), key=lambda item: int(item.get("source_season") or 0)),
+            }
+
+            if rule["name"] == "喜人奇妙夜":
+                self._patch_amazing_night_rule(rule)
+
+            normalized_rules.append(rule)
+
+        return normalized_rules
+
+    def _patch_amazing_night_rule(self, rule: Dict[str, Any]):
+        season_one = self._get_or_create_season_rule(rule, 1)
+        party = season_one.setdefault("types", {}).setdefault("party", {"source_keywords": [], "tmdb_keywords": []})
+        if "派对" not in party.get("source_keywords", []):
+            party["source_keywords"] = self._dedupe_list((party.get("source_keywords") or []) + ["派对"])
+        if "派对" not in party.get("tmdb_keywords", []):
+            party["tmdb_keywords"] = self._dedupe_list((party.get("tmdb_keywords") or []) + ["派对"])
+        bonus = season_one.setdefault("types", {}).setdefault("bonus", {"source_keywords": [], "tmdb_keywords": []})
+        if not bonus.get("source_keywords"):
+            bonus["source_keywords"] = ["彩蛋", ".Bonus."]
+        if not bonus.get("tmdb_keywords"):
+            bonus["tmdb_keywords"] = ["特辑"]
+
+    def _get_or_create_season_rule(self, rule: Dict[str, Any], source_season: int) -> Dict[str, Any]:
+        for season_rule in rule.get("seasons") or []:
+            if int(season_rule.get("source_season") or 0) == int(source_season):
+                return season_rule
+        season_rule = {"source_season": int(source_season), "types": {}, "manual_matches": []}
+        rule.setdefault("seasons", []).append(season_rule)
+        rule["seasons"] = sorted(rule.get("seasons") or [], key=lambda item: int(item.get("source_season") or 0))
+        return season_rule
+
+    @staticmethod
+    def _normalize_type_conf(type_conf: Dict[str, Any]) -> Dict[str, List[str]]:
+        type_conf = type_conf or {}
+        return {
+            "source_keywords": VarietySpecialMapper._split_multiline(type_conf.get("source_keywords") or []),
+            "tmdb_keywords": VarietySpecialMapper._split_multiline(type_conf.get("tmdb_keywords") or []),
+        }
+
+    def _normalize_types_map(self, types_map: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
+        normalized: Dict[str, Dict[str, List[str]]] = {}
+        for type_key, type_conf in (types_map or {}).items():
+            normalized[type_key] = self._normalize_type_conf(type_conf)
+        return normalized
+
+    @staticmethod
+    def _normalize_manual_matches(manual_matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized: List[Dict[str, Any]] = []
+        for item in manual_matches or []:
+            if not isinstance(item, dict):
+                continue
+            type_name = str(item.get("type") or "").strip()
+            keywords = VarietySpecialMapper._split_multiline(item.get("source_keywords") or [])
+            if not type_name or not keywords:
+                continue
+            normalized.append(
+                {
+                    "type": type_name,
+                    "source_keywords": keywords,
+                    "index": VarietySpecialMapper._to_int(item.get("index")),
+                    "target_episode": VarietySpecialMapper._to_int(item.get("target_episode")),
+                }
+            )
+        return normalized
 
     def _match_rule(self, mediainfo: Any, file_path: Path, source_name: Optional[str] = None) -> Optional[Dict[str, Any]]:
         tmdbid = getattr(mediainfo, "tmdb_id", None)
@@ -469,34 +734,21 @@ class VarietySpecialMapper(_PluginBase):
                     return rule
         return None
 
-    def _detect_source_kind(self, file_name: str, rule: Dict[str, Any]) -> Tuple[Optional[str], Optional[int], Optional[int]]:
-        manual_matches = rule.get("manual_matches") or []
+    def _detect_source_kind(
+        self,
+        file_name: str,
+        rule: Dict[str, Any],
+        source_season: int,
+    ) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+        manual_matches = self._get_manual_matches(rule, source_season)
         lowered = file_name.lower()
         for item in manual_matches:
             keywords = [str(word).lower() for word in (item.get("source_keywords") or [])]
             if keywords and any(word in lowered for word in keywords):
                 return item.get("type"), item.get("index"), item.get("target_episode")
 
-        specific_types = rule.get("types") or {}
-        common_types = self.COMMON_TYPES
-
-        for kind, kind_conf in specific_types.items():
-            for keyword in kind_conf.get("source_keywords") or []:
-                if str(keyword).lower() in lowered:
-                    return kind, None, None
-
-        for kind, kind_conf in common_types.items():
-            if kind in specific_types:
-                specific_keywords = {str(word).lower() for word in (specific_types.get(kind, {}).get("source_keywords") or [])}
-            else:
-                specific_keywords = set()
-            for keyword in kind_conf.get("source_keywords") or []:
-                lower_keyword = str(keyword).lower()
-                if lower_keyword in specific_keywords:
-                    continue
-                if lower_keyword in lowered:
-                    return kind, None, None
-        return None, None, None
+        season_types = self._get_season_types(rule, source_season)
+        return self._detect_kind_from_keywords(lowered=lowered, types_map=season_types, keyword_field="source_keywords")
 
     def _extract_source_season(self, file_name: str, meta: Any, rule: Dict[str, Any]) -> int:
         match = re.search(r"S(\d{1,2})E\d{1,4}", file_name, re.IGNORECASE)
@@ -561,34 +813,23 @@ class VarietySpecialMapper(_PluginBase):
         return None
 
     def _build_tmdb_mapping(self, rule: Dict[str, Any], episodes: List[Any]) -> Dict[str, Dict[str, Dict[int, int]]]:
-        specific_types = rule.get("types") or {}
-        common_types = self.COMMON_TYPES
         mapping: Dict[str, Dict[str, Dict[int, int]]] = {}
         fallback_counter: Dict[Tuple[int, str], int] = {}
 
-        def detect_kind(title: str) -> Optional[str]:
-            lowered = (title or "").lower()
-            for kind, kind_conf in specific_types.items():
-                keywords = [str(word).lower() for word in (kind_conf.get("tmdb_keywords") or [])]
-                if keywords and any(word in lowered for word in keywords):
-                    return kind
-            for kind, kind_conf in common_types.items():
-                specific_keywords = {str(word).lower() for word in (specific_types.get(kind, {}).get("tmdb_keywords") or [])}
-                keywords = [str(word).lower() for word in (kind_conf.get("tmdb_keywords") or [])]
-                if keywords and any(word in lowered for word in keywords if word not in specific_keywords):
-                    return kind
-            return None
-
         for episode in sorted(episodes, key=lambda item: getattr(item, "episode_number", 0) or 0):
             title = getattr(episode, "name", "") or ""
-            kind = detect_kind(title)
+            season_match = re.search(r"第\s*(\d{1,2})\s*季", title)
+            mapping_season = int(season_match.group(1)) if season_match else int(rule.get("main_season") or 1)
+            season_types = self._get_season_types(rule, mapping_season)
+            kind, _, _ = self._detect_kind_from_keywords(
+                lowered=title.lower(),
+                types_map=season_types,
+                keyword_field="tmdb_keywords",
+            )
             if not kind:
                 continue
 
-            season_match = re.search(r"第\s*(\d{1,2})\s*季", title)
-            mapping_season = int(season_match.group(1)) if season_match else int(rule.get("main_season") or 1)
             counter_key = (mapping_season, kind)
-
             issue_match = re.search(r"第\s*(\d{1,3})\s*期", title)
             if issue_match:
                 issue_index = int(issue_match.group(1))
@@ -602,6 +843,47 @@ class VarietySpecialMapper(_PluginBase):
             )
 
         return mapping
+
+    def _get_manual_matches(self, rule: Dict[str, Any], source_season: int) -> List[Dict[str, Any]]:
+        season_rule = self._find_season_rule(rule, source_season)
+        return self._normalize_manual_matches((season_rule or {}).get("manual_matches") or [])
+
+    def _get_season_types(self, rule: Dict[str, Any], source_season: int) -> Dict[str, Dict[str, List[str]]]:
+        season_rule = self._find_season_rule(rule, source_season)
+        specific_types = self._normalize_types_map((season_rule or {}).get("types") or {})
+        merged: Dict[str, Dict[str, List[str]]] = {}
+        all_type_keys = self._get_all_type_keys(self._common_types, [rule])
+        for type_key in all_type_keys:
+            common_conf = self._normalize_type_conf(self._common_types.get(type_key) or {})
+            specific_conf = specific_types.get(type_key) or {}
+            merged[type_key] = {
+                "source_keywords": specific_conf.get("source_keywords") or common_conf.get("source_keywords") or [],
+                "tmdb_keywords": specific_conf.get("tmdb_keywords") or common_conf.get("tmdb_keywords") or [],
+            }
+        return merged
+
+    def _find_season_rule(self, rule: Dict[str, Any], source_season: int) -> Optional[Dict[str, Any]]:
+        for season_rule in rule.get("seasons") or []:
+            if int(season_rule.get("source_season") or 0) == int(source_season):
+                return season_rule
+        main_season = int(rule.get("main_season") or 1)
+        for season_rule in rule.get("seasons") or []:
+            if int(season_rule.get("source_season") or 0) == main_season:
+                return season_rule
+        seasons = rule.get("seasons") or []
+        return seasons[0] if seasons else None
+
+    def _detect_kind_from_keywords(
+        self,
+        lowered: str,
+        types_map: Dict[str, Dict[str, List[str]]],
+        keyword_field: str,
+    ) -> Tuple[Optional[str], Optional[int], Optional[int]]:
+        for kind in self._get_all_type_keys(self._common_types, self._rules):
+            keywords = [str(word).lower() for word in (types_map.get(kind, {}).get(keyword_field) or [])]
+            if keywords and any(word in lowered for word in keywords):
+                return kind, None, None
+        return None, None, None
 
     @staticmethod
     def _build_new_name(file_name: str, target_season: int, target_episode: int) -> str:
@@ -695,3 +977,614 @@ class VarietySpecialMapper(_PluginBase):
         history = self.get_data("history") or []
         history.insert(0, item)
         self.save_data("history", history[:30])
+
+    def _build_form_model(self) -> Dict[str, Any]:
+        model: Dict[str, Any] = {
+            "enabled": self._enabled,
+            "notify": self._notify,
+            "specials_folder": self._specials_folder,
+        }
+
+        type_keys = self._get_all_type_keys(self._common_types, self._rules)
+        for type_key in type_keys:
+            common_conf = self._common_types.get(type_key) or {}
+            model[f"common_type_{type_key}_source_keywords_text"] = self._join_multiline(common_conf.get("source_keywords") or [])
+            model[f"common_type_{type_key}_tmdb_keywords_text"] = self._join_multiline(common_conf.get("tmdb_keywords") or [])
+
+        for rule_index, rule in enumerate(self._rules):
+            model[f"rule_{rule_index}_name"] = rule.get("name") or ""
+            model[f"rule_{rule_index}_tmdbid"] = int(rule.get("tmdbid") or 0)
+            model[f"rule_{rule_index}_match_titles_text"] = self._join_multiline(rule.get("match_titles") or [])
+            model[f"rule_{rule_index}_main_season"] = int(rule.get("main_season") or 1)
+            model[f"rule_{rule_index}_specials_season"] = int(rule.get("specials_season") or 0)
+            model[f"rule_{rule_index}_specials_folder"] = rule.get("specials_folder") or self._specials_folder or "Specials"
+            model[f"rule_{rule_index}_delete"] = False
+            model[f"rule_{rule_index}_add_new_season"] = False
+            model[f"rule_{rule_index}_new_season_number"] = ""
+
+            for season_index, season_rule in enumerate(rule.get("seasons") or []):
+                model[f"rule_{rule_index}_season_{season_index}_number"] = int(season_rule.get("source_season") or 1)
+                model[f"rule_{rule_index}_season_{season_index}_delete"] = False
+                model[f"rule_{rule_index}_season_{season_index}_manual_matches_text"] = json.dumps(
+                    season_rule.get("manual_matches") or [],
+                    ensure_ascii=False,
+                    indent=2,
+                )
+                season_types = season_rule.get("types") or {}
+                for type_key in type_keys:
+                    type_conf = season_types.get(type_key) or {}
+                    model[
+                        f"rule_{rule_index}_season_{season_index}_type_{type_key}_source_keywords_text"
+                    ] = self._join_multiline(type_conf.get("source_keywords") or [])
+                    model[
+                        f"rule_{rule_index}_season_{season_index}_type_{type_key}_tmdb_keywords_text"
+                    ] = self._join_multiline(type_conf.get("tmdb_keywords") or [])
+
+        model.update(
+            {
+                "new_rule_create": False,
+                "new_rule_name": "",
+                "new_rule_tmdbid": "",
+                "new_rule_match_titles_text": "",
+                "new_rule_main_season": 1,
+                "new_rule_specials_season": 0,
+                "new_rule_specials_folder": self._specials_folder or "Specials",
+                "new_rule_initial_seasons_text": "1",
+            }
+        )
+        return model
+
+    def _build_rule_panel(self, rule_index: int, rule: Dict[str, Any], type_keys: List[str]) -> Dict[str, Any]:
+        season_panels = [
+            self._build_season_panel(rule_index, season_index, season_rule, type_keys)
+            for season_index, season_rule in enumerate(rule.get("seasons") or [])
+        ]
+        return {
+            "component": "VExpansionPanel",
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "text": f"{rule.get('name')} (TMDB: {rule.get('tmdbid')})",
+                },
+                {
+                    "component": "VExpansionPanelText",
+                    "content": [
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_name",
+                                                "label": "节目名称",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_tmdbid",
+                                                "label": "TMDB ID",
+                                                "type": "number",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_delete",
+                                                "label": "保存时删除这个节目",
+                                                "color": "error",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_main_season",
+                                                "label": "默认主季",
+                                                "type": "number",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_specials_season",
+                                                "label": "TMDB 特别篇季号",
+                                                "type": "number",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_specials_folder",
+                                                "label": "特别篇目录名",
+                                                "placeholder": "Specials",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12},
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_match_titles_text",
+                                                "label": "匹配标题 / 别名",
+                                                "rows": 3,
+                                                "autoGrow": True,
+                                                "placeholder": "每行一个，如\n喜人奇妙夜\nAmazing Night\nAmazing.Night",
+                                            },
+                                        }
+                                    ],
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VExpansionPanels",
+                            "props": {"multiple": True, "popout": True},
+                            "content": season_panels + [self._build_add_season_panel(rule_index)],
+                        },
+                    ],
+                },
+            ],
+        }
+
+    def _build_season_panel(
+        self,
+        rule_index: int,
+        season_index: int,
+        season_rule: Dict[str, Any],
+        type_keys: List[str],
+    ) -> Dict[str, Any]:
+        season_number = int(season_rule.get("source_season") or 1)
+        type_panels = [
+            self._build_type_panel(
+                title=self._type_label(type_key),
+                source_model=f"rule_{rule_index}_season_{season_index}_type_{type_key}_source_keywords_text",
+                tmdb_model=f"rule_{rule_index}_season_{season_index}_type_{type_key}_tmdb_keywords_text",
+            )
+            for type_key in type_keys
+        ]
+        type_panels.append(
+            {
+                "component": "VExpansionPanel",
+                "content": [
+                    {
+                        "component": "VExpansionPanelTitle",
+                        "text": "高级手工匹配（可选）",
+                    },
+                    {
+                        "component": "VExpansionPanelText",
+                        "content": [
+                            {
+                                "component": "VTextarea",
+                                "props": {
+                                    "model": f"rule_{rule_index}_season_{season_index}_manual_matches_text",
+                                    "label": "manual_matches JSON",
+                                    "rows": 6,
+                                    "autoGrow": True,
+                                    "placeholder": "如有极少数非常规命名，再填这里；平时留空即可。",
+                                },
+                            }
+                        ],
+                    },
+                ],
+            }
+        )
+        return {
+            "component": "VExpansionPanel",
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "text": f"第 {season_number} 季规则",
+                },
+                {
+                    "component": "VExpansionPanelText",
+                    "content": [
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_season_{season_index}_number",
+                                                "label": "来源季号",
+                                                "type": "number",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 8},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_season_{season_index}_delete",
+                                                "label": "保存时删除这一季规则",
+                                                "color": "error",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VExpansionPanels",
+                            "props": {"multiple": True, "popout": True},
+                            "content": type_panels,
+                        },
+                    ],
+                },
+            ],
+        }
+
+    def _build_add_season_panel(self, rule_index: int) -> Dict[str, Any]:
+        return {
+            "component": "VExpansionPanel",
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "text": "新增一个季规则",
+                },
+                {
+                    "component": "VExpansionPanelText",
+                    "content": [
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_new_season_number",
+                                                "label": "新季号",
+                                                "type": "number",
+                                                "placeholder": "例如 2",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": f"rule_{rule_index}_add_new_season",
+                                                "label": "保存时新增该季",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+
+    def _build_new_rule_panel(self) -> Dict[str, Any]:
+        return {
+            "component": "VExpansionPanel",
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "text": "新增节目规则",
+                },
+                {
+                    "component": "VExpansionPanelText",
+                    "content": [
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "new_rule_name",
+                                                "label": "节目名称",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "new_rule_tmdbid",
+                                                "label": "TMDB ID",
+                                                "type": "number",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": "new_rule_create",
+                                                "label": "保存时新增这个节目",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "new_rule_main_season",
+                                                "label": "默认主季",
+                                                "type": "number",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "new_rule_specials_season",
+                                                "label": "TMDB 特别篇季号",
+                                                "type": "number",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": "new_rule_specials_folder",
+                                                "label": "特别篇目录名",
+                                                "placeholder": "Specials",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": "new_rule_match_titles_text",
+                                                "label": "匹配标题 / 别名",
+                                                "rows": 3,
+                                                "autoGrow": True,
+                                                "placeholder": "每行一个",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": "new_rule_initial_seasons_text",
+                                                "label": "初始化季号",
+                                                "rows": 3,
+                                                "autoGrow": True,
+                                                "placeholder": "每行一个或逗号分隔，如\n1\n2",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        },
+                    ],
+                },
+            ],
+        }
+
+    def _build_type_panel(self, title: str, source_model: str, tmdb_model: str) -> Dict[str, Any]:
+        return {
+            "component": "VExpansionPanel",
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "text": title,
+                },
+                {
+                    "component": "VExpansionPanelText",
+                    "content": [
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": source_model,
+                                                "label": "源文件名关键词",
+                                                "rows": 4,
+                                                "autoGrow": True,
+                                                "placeholder": "每行一个关键词",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 6},
+                                    "content": [
+                                        {
+                                            "component": "VTextarea",
+                                            "props": {
+                                                "model": tmdb_model,
+                                                "label": "TMDB 标题关键词",
+                                                "rows": 4,
+                                                "autoGrow": True,
+                                                "placeholder": "每行一个关键词",
+                                            },
+                                        }
+                                    ],
+                                },
+                            ],
+                        }
+                    ],
+                },
+            ],
+        }
+
+    @classmethod
+    def _type_label(cls, type_key: str) -> str:
+        labels = {
+            "pilot": "先导 / 开放日 / 抢先看",
+            "pure": "纯享",
+            "watch": "陪看",
+            "chat": "夜聊 / 聊天局",
+            "punish": "惩罚室",
+            "party": "聚会 / 派对 / 游戏",
+            "bonus": "彩蛋 / 加更 / 企划 / 特辑",
+        }
+        return labels.get(type_key, type_key)
+
+    @classmethod
+    def _get_all_type_keys(cls, common_types: Dict[str, Any], rules: List[Dict[str, Any]]) -> List[str]:
+        ordered: List[str] = []
+        for type_key in cls.TYPE_ORDER:
+            if type_key not in ordered:
+                ordered.append(type_key)
+        for type_key in (common_types or {}).keys():
+            if type_key not in ordered:
+                ordered.append(type_key)
+        for rule in rules or []:
+            for season_rule in rule.get("seasons") or []:
+                for type_key in (season_rule.get("types") or {}).keys():
+                    if type_key not in ordered:
+                        ordered.append(type_key)
+        return ordered
+
+    @staticmethod
+    def _split_multiline(value: Any) -> List[str]:
+        if isinstance(value, list):
+            tokens = value
+        else:
+            raw = str(value or "")
+            tokens = re.split(r"[\n,，]+", raw)
+        return VarietySpecialMapper._dedupe_list([str(item).strip() for item in tokens if str(item).strip()])
+
+    @staticmethod
+    def _join_multiline(values: List[str]) -> str:
+        return "\n".join([str(item).strip() for item in (values or []) if str(item).strip()])
+
+    @staticmethod
+    def _dedupe_list(values: List[str]) -> List[str]:
+        seen = set()
+        result = []
+        for value in values or []:
+            if value not in seen:
+                seen.add(value)
+                result.append(value)
+        return result
+
+    @staticmethod
+    def _to_int(value: Any, default: Optional[int] = None) -> Optional[int]:
+        if value is None or value == "":
+            return default
+        try:
+            return int(str(value).strip())
+        except Exception:
+            return default
+
+    @staticmethod
+    def _parse_manual_matches_text(text: Any) -> List[Dict[str, Any]]:
+        raw = str(text or "").strip()
+        if not raw:
+            return []
+        try:
+            data = json.loads(raw)
+            if isinstance(data, list):
+                return VarietySpecialMapper._normalize_manual_matches(data)
+        except Exception as err:
+            logger.error(f"解析 manual_matches 失败：{err}")
+        return []
