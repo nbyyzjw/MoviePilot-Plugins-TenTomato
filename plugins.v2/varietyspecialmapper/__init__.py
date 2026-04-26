@@ -17,7 +17,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.2.0"
+    plugin_version = "0.2.1"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -57,8 +57,8 @@ class VarietySpecialMapper(_PluginBase):
             "tmdb_keywords": ["聚会", "派对", "游戏时间", "狼人杀"],
         },
         "bonus": {
-            "source_keywords": ["彩蛋", ".Bonus.", "花絮", "特辑", "高光", "回顾", "团建"],
-            "tmdb_keywords": ["彩蛋", "花絮", "特辑", "高光", "回顾", "团建"],
+            "source_keywords": ["超前彩蛋", "彩蛋", ".Bonus.", "加更", "企划", "特别企划", "花絮", "特辑", "高光", "回顾", "团建"],
+            "tmdb_keywords": ["超前彩蛋", "彩蛋", "加更", "企划", "特别企划", "花絮", "特辑", "高光", "回顾", "团建"],
         },
     }
 
