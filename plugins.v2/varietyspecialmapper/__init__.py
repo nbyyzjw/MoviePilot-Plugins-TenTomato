@@ -17,7 +17,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.1.4"
+    plugin_version = "0.2.0"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -30,6 +30,37 @@ class VarietySpecialMapper(_PluginBase):
     _rules_text = ""
     _rules: List[Dict[str, Any]] = []
     _tmdb_mapping_cache: Dict[str, Dict[str, Dict[int, int]]] = {}
+
+    COMMON_TYPES: Dict[str, Dict[str, List[str]]] = {
+        "pilot": {
+            "source_keywords": ["先导", "先导片", "抢先看", "开放日", "集结篇"],
+            "tmdb_keywords": ["先导", "先导片", "开放日", "集结篇"],
+        },
+        "pure": {
+            "source_keywords": ["纯享", "纯享版", ".Pure."],
+            "tmdb_keywords": ["纯享", "纯享版"],
+        },
+        "watch": {
+            "source_keywords": ["陪看", ".Watch.", "专门陪你看"],
+            "tmdb_keywords": ["陪看", "专门陪你看"],
+        },
+        "chat": {
+            "source_keywords": ["夜聊", ".Chat.", "聊天局", "唠嗑"],
+            "tmdb_keywords": ["夜聊", "聊天", "唠嗑"],
+        },
+        "punish": {
+            "source_keywords": ["惩罚室", ".Punish.", "不好笑惩罚室"],
+            "tmdb_keywords": ["惩罚室", "不好笑惩罚室"],
+        },
+        "party": {
+            "source_keywords": ["聚会", "派对", ".Party.", "狼人杀", "游戏时间", "课间游戏"],
+            "tmdb_keywords": ["聚会", "派对", "游戏时间", "狼人杀"],
+        },
+        "bonus": {
+            "source_keywords": ["彩蛋", ".Bonus.", "花絮", "特辑", "高光", "回顾", "团建"],
+            "tmdb_keywords": ["彩蛋", "花絮", "特辑", "高光", "回顾", "团建"],
+        },
+    }
 
     @staticmethod
     def _default_rules_text() -> str:
@@ -446,9 +477,24 @@ class VarietySpecialMapper(_PluginBase):
             if keywords and any(word in lowered for word in keywords):
                 return item.get("type"), item.get("index"), item.get("target_episode")
 
-        for kind, kind_conf in (rule.get("types") or {}).items():
+        specific_types = rule.get("types") or {}
+        common_types = self.COMMON_TYPES
+
+        for kind, kind_conf in specific_types.items():
             for keyword in kind_conf.get("source_keywords") or []:
                 if str(keyword).lower() in lowered:
+                    return kind, None, None
+
+        for kind, kind_conf in common_types.items():
+            if kind in specific_types:
+                specific_keywords = {str(word).lower() for word in (specific_types.get(kind, {}).get("source_keywords") or [])}
+            else:
+                specific_keywords = set()
+            for keyword in kind_conf.get("source_keywords") or []:
+                lower_keyword = str(keyword).lower()
+                if lower_keyword in specific_keywords:
+                    continue
+                if lower_keyword in lowered:
                     return kind, None, None
         return None, None, None
 
@@ -515,15 +561,21 @@ class VarietySpecialMapper(_PluginBase):
         return None
 
     def _build_tmdb_mapping(self, rule: Dict[str, Any], episodes: List[Any]) -> Dict[str, Dict[str, Dict[int, int]]]:
-        types = rule.get("types") or {}
+        specific_types = rule.get("types") or {}
+        common_types = self.COMMON_TYPES
         mapping: Dict[str, Dict[str, Dict[int, int]]] = {}
         fallback_counter: Dict[Tuple[int, str], int] = {}
 
         def detect_kind(title: str) -> Optional[str]:
             lowered = (title or "").lower()
-            for kind, kind_conf in types.items():
+            for kind, kind_conf in specific_types.items():
                 keywords = [str(word).lower() for word in (kind_conf.get("tmdb_keywords") or [])]
                 if keywords and any(word in lowered for word in keywords):
+                    return kind
+            for kind, kind_conf in common_types.items():
+                specific_keywords = {str(word).lower() for word in (specific_types.get(kind, {}).get("tmdb_keywords") or [])}
+                keywords = [str(word).lower() for word in (kind_conf.get("tmdb_keywords") or [])]
+                if keywords and any(word in lowered for word in keywords if word not in specific_keywords):
                     return kind
             return None
 
