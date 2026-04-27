@@ -20,7 +20,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.4.0"
+    plugin_version = "0.4.1"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -36,37 +36,25 @@ class VarietySpecialMapper(_PluginBase):
     _original_recognize_media = None
     _original_async_recognize_media = None
 
-    TYPE_ORDER = ["pilot", "pure", "watch", "chat", "punish", "party", "bonus", "program", "egg", "plus"]
+    TYPE_ORDER = ["pilot", "bonus", "program", "plus", "pure", "watch", "chat", "punish", "party"]
     UI_SCHEMA_VERSION = "interactive_v3"
 
     COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, List[str]]] = {
         "pilot": {
-            "source_keywords": ["先导", "先导片", "抢先看", "开放日", "集结篇"],
-            "tmdb_keywords": ["先导", "先导片", "开放日", "集结篇"],
-        },
-        "pure": {
-            "source_keywords": ["纯享", "纯享版", ".Pure."],
-            "tmdb_keywords": ["纯享", "纯享版"],
-        },
-        "watch": {
-            "source_keywords": ["陪看", ".Watch.", "专门陪你看"],
-            "tmdb_keywords": ["陪看", "专门陪你看"],
-        },
-        "chat": {
-            "source_keywords": ["夜聊", ".Chat.", "聊天局", "唠嗑"],
-            "tmdb_keywords": ["夜聊", "聊天", "唠嗑"],
-        },
-        "punish": {
-            "source_keywords": ["惩罚室", ".Punish.", "不好笑惩罚室"],
-            "tmdb_keywords": ["惩罚室", "不好笑惩罚室"],
-        },
-        "party": {
-            "source_keywords": ["聚会", "派对", ".Party.", "狼人杀", "游戏时间", "课间游戏"],
-            "tmdb_keywords": ["聚会", "派对", "游戏时间", "狼人杀"],
+            "source_keywords": ["先导"],
+            "tmdb_keywords": ["先导"],
         },
         "bonus": {
-            "source_keywords": ["超前彩蛋", "彩蛋", ".Bonus.", "加更", "企划", "特别企划", "花絮", "特辑", "高光", "回顾", "团建"],
-            "tmdb_keywords": ["超前彩蛋", "彩蛋", "加更", "企划", "特别企划", "花絮", "特辑", "高光", "回顾", "团建"],
+            "source_keywords": ["彩蛋"],
+            "tmdb_keywords": ["彩蛋"],
+        },
+        "program": {
+            "source_keywords": ["企划"],
+            "tmdb_keywords": ["企划"],
+        },
+        "plus": {
+            "source_keywords": ["加更"],
+            "tmdb_keywords": ["加更"],
         },
     }
 
@@ -142,7 +130,7 @@ class VarietySpecialMapper(_PluginBase):
                             "source_keywords": ["特别企划", "企划", ".Program.", "Program"],
                             "tmdb_keywords": ["特别企划", "企划"],
                         },
-                        "egg": {
+                        "bonus": {
                             "source_keywords": ["超前彩蛋", ".Egg.", "Egg"],
                             "tmdb_keywords": ["超前彩蛋"],
                         },
@@ -256,8 +244,11 @@ class VarietySpecialMapper(_PluginBase):
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         model = self._build_form_model()
-        type_keys = self._get_all_type_keys(self._common_types, self._rules)
-        show_panels = [self._build_rule_panel(rule_index, rule, type_keys) for rule_index, rule in enumerate(self._rules)]
+        common_type_keys = self._get_common_type_keys()
+        show_panels = [
+            self._build_rule_panel(rule_index, rule, self._get_rule_type_keys(rule))
+            for rule_index, rule in enumerate(self._rules)
+        ]
 
         return [
             {
@@ -351,7 +342,7 @@ class VarietySpecialMapper(_PluginBase):
                                                         source_model=f"common_type_{type_key}_source_keywords_text",
                                                         tmdb_model=f"common_type_{type_key}_tmdb_keywords_text",
                                                     )
-                                                    for type_key in type_keys
+                                                    for type_key in common_type_keys
                                                 ],
                                             }
                                         ],
@@ -610,9 +601,9 @@ class VarietySpecialMapper(_PluginBase):
     def _parse_interactive_form_config(self, config: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, List[str]]], List[Dict[str, Any]]]:
         current_rules = self._normalize_rules(self._rules or self._default_rules_data())
         common_types: Dict[str, Dict[str, List[str]]] = {}
-        type_keys = self._get_all_type_keys(self._common_types or self._default_common_types(), current_rules)
+        common_type_keys = self._get_common_type_keys(self._common_types or self._default_common_types())
 
-        for type_key in type_keys:
+        for type_key in common_type_keys:
             common_types[type_key] = {
                 "source_keywords": self._split_multiline(config.get(f"common_type_{type_key}_source_keywords_text")),
                 "tmdb_keywords": self._split_multiline(config.get(f"common_type_{type_key}_tmdb_keywords_text")),
@@ -627,6 +618,8 @@ class VarietySpecialMapper(_PluginBase):
             if bool(config.get(f"rule_{rule_index}_delete")):
                 continue
 
+            rule_type_keys = self._get_rule_type_keys(current_rules[rule_index], common_types)
+
             seasons: List[Dict[str, Any]] = []
             season_count = len(current_rules[rule_index].get("seasons") or [])
             for season_index in range(season_count):
@@ -637,7 +630,7 @@ class VarietySpecialMapper(_PluginBase):
                     continue
 
                 season_types: Dict[str, Dict[str, List[str]]] = {}
-                for type_key in type_keys:
+                for type_key in rule_type_keys:
                     source_keywords = self._split_multiline(
                         config.get(f"rule_{rule_index}_season_{season_index}_type_{type_key}_source_keywords_text")
                     )
@@ -729,7 +722,7 @@ class VarietySpecialMapper(_PluginBase):
         normalized = self._default_common_types()
         for type_key, type_conf in (common_types or {}).items():
             normalized[type_key] = self._normalize_type_conf(type_conf)
-        return {key: normalized[key] for key in self._get_all_type_keys(normalized, [])}
+        return {key: normalized[key] for key in self._get_common_type_keys(normalized)}
 
     def _normalize_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         normalized_rules: List[Dict[str, Any]] = []
@@ -837,17 +830,20 @@ class VarietySpecialMapper(_PluginBase):
         season_nine["tmdb_season_number"] = 8
         season_nine["tmdb_season_matchers"] = self._dedupe_list((season_nine.get("tmdb_season_matchers") or []) + ["2026"])
 
-        season_nine.setdefault("types", {}).setdefault("bonus", {"source_keywords": [], "tmdb_keywords": []})
+        season_types = season_nine.setdefault("types", {})
+        bonus = season_types.setdefault("bonus", {"source_keywords": [], "tmdb_keywords": []})
+        legacy_egg = season_types.pop("egg", None)
+        if legacy_egg:
+            bonus["source_keywords"] = self._dedupe_list((bonus.get("source_keywords") or []) + (legacy_egg.get("source_keywords") or []))
+            bonus["tmdb_keywords"] = self._dedupe_list((bonus.get("tmdb_keywords") or []) + (legacy_egg.get("tmdb_keywords") or []))
+        bonus["source_keywords"] = self._dedupe_list((bonus.get("source_keywords") or []) + ["超前彩蛋", ".Egg.", "Egg"])
+        bonus["tmdb_keywords"] = self._dedupe_list((bonus.get("tmdb_keywords") or []) + ["超前彩蛋"])
 
-        program = season_nine.setdefault("types", {}).setdefault("program", {"source_keywords": [], "tmdb_keywords": []})
+        program = season_types.setdefault("program", {"source_keywords": [], "tmdb_keywords": []})
         program["source_keywords"] = self._dedupe_list((program.get("source_keywords") or []) + ["特别企划", "企划", ".Program.", "Program"])
         program["tmdb_keywords"] = self._dedupe_list((program.get("tmdb_keywords") or []) + ["特别企划", "企划"])
 
-        egg = season_nine.setdefault("types", {}).setdefault("egg", {"source_keywords": [], "tmdb_keywords": []})
-        egg["source_keywords"] = self._dedupe_list((egg.get("source_keywords") or []) + ["超前彩蛋", ".Egg.", "Egg"])
-        egg["tmdb_keywords"] = self._dedupe_list((egg.get("tmdb_keywords") or []) + ["超前彩蛋"])
-
-        plus = season_nine.setdefault("types", {}).setdefault("plus", {"source_keywords": [], "tmdb_keywords": []})
+        plus = season_types.setdefault("plus", {"source_keywords": [], "tmdb_keywords": []})
         plus["source_keywords"] = self._dedupe_list((plus.get("source_keywords") or []) + ["加更", ".Plus.", "Plus"])
         plus["tmdb_keywords"] = self._dedupe_list((plus.get("tmdb_keywords") or []) + ["加更版", "Plus"])
 
@@ -1225,13 +1221,14 @@ class VarietySpecialMapper(_PluginBase):
             "specials_folder": self._specials_folder,
         }
 
-        type_keys = self._get_all_type_keys(self._common_types, self._rules)
-        for type_key in type_keys:
+        common_type_keys = self._get_common_type_keys()
+        for type_key in common_type_keys:
             common_conf = self._common_types.get(type_key) or {}
             model[f"common_type_{type_key}_source_keywords_text"] = self._join_multiline(common_conf.get("source_keywords") or [])
             model[f"common_type_{type_key}_tmdb_keywords_text"] = self._join_multiline(common_conf.get("tmdb_keywords") or [])
 
         for rule_index, rule in enumerate(self._rules):
+            rule_type_keys = self._get_rule_type_keys(rule)
             model[f"rule_{rule_index}_name"] = rule.get("name") or ""
             model[f"rule_{rule_index}_tmdbid"] = int(rule.get("tmdbid") or 0)
             model[f"rule_{rule_index}_match_titles_text"] = self._join_multiline(rule.get("match_titles") or [])
@@ -1257,7 +1254,7 @@ class VarietySpecialMapper(_PluginBase):
                     indent=2,
                 )
                 season_types = season_rule.get("types") or {}
-                for type_key in type_keys:
+                for type_key in rule_type_keys:
                     type_conf = season_types.get(type_key) or {}
                     model[
                         f"rule_{rule_index}_season_{season_index}_type_{type_key}_source_keywords_text"
@@ -1801,18 +1798,38 @@ class VarietySpecialMapper(_PluginBase):
     @classmethod
     def _type_label(cls, type_key: str) -> str:
         labels = {
-            "pilot": "先导 / 开放日 / 抢先看",
+            "pilot": "先导",
+            "bonus": "彩蛋",
+            "program": "企划",
+            "plus": "加更",
             "pure": "纯享",
             "watch": "陪看",
-            "chat": "夜聊 / 聊天局",
+            "chat": "夜聊",
             "punish": "惩罚室",
-            "party": "聚会 / 派对 / 游戏",
-            "bonus": "彩蛋 / 加更 / 企划 / 特辑",
-            "program": "企划 / 特别企划",
-            "egg": "超前彩蛋",
-            "plus": "加更 / Plus",
+            "party": "聚会",
         }
         return labels.get(type_key, type_key)
+
+    @classmethod
+    def _get_common_type_keys(cls, common_types: Optional[Dict[str, Any]] = None) -> List[str]:
+        target = common_types or cls.COMMON_TYPES_TEMPLATE
+        ordered: List[str] = []
+        for type_key in cls.TYPE_ORDER:
+            if type_key in target and type_key not in ordered:
+                ordered.append(type_key)
+        for type_key in target.keys():
+            if type_key not in ordered:
+                ordered.append(type_key)
+        return ordered
+
+    @classmethod
+    def _get_rule_type_keys(cls, rule: Dict[str, Any], common_types: Optional[Dict[str, Any]] = None) -> List[str]:
+        ordered = cls._get_common_type_keys(common_types)
+        for season_rule in rule.get("seasons") or []:
+            for type_key in (season_rule.get("types") or {}).keys():
+                if type_key not in ordered:
+                    ordered.append(type_key)
+        return ordered
 
     @classmethod
     def _get_all_type_keys(cls, common_types: Dict[str, Any], rules: List[Dict[str, Any]]) -> List[str]:
