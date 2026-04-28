@@ -20,7 +20,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.4.1"
+    plugin_version = "0.4.2"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -37,7 +37,7 @@ class VarietySpecialMapper(_PluginBase):
     _original_async_recognize_media = None
 
     TYPE_ORDER = ["pilot", "bonus", "program", "plus", "pure", "watch", "chat", "punish", "party"]
-    UI_SCHEMA_VERSION = "interactive_v3"
+    UI_SCHEMA_VERSION = "interactive_v4"
 
     COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, List[str]]] = {
         "pilot": {
@@ -312,7 +312,7 @@ class VarietySpecialMapper(_PluginBase):
                                             "type": "info",
                                             "variant": "tonal",
                                             "title": "交互式规则管理",
-                                            "text": "不再需要直接改 JSON。现在按 通用关键词库 -> 节目 -> 季 -> 类型 的树状折叠结构管理。关键词建议每行一个，保存配置后立即生效。新增或删除节目/季时，勾选对应开关再点保存。",
+                                            "text": "不再需要直接改 JSON。现在按 通用关键词库 -> 节目 -> 季 -> 类型 的树状折叠结构管理。关键词支持直接输入后回车新增、点 × 删除；需要改词时删掉重输即可。新增节目和新增季也可以先把内容填完整，最后统一点一次保存。",
                                         },
                                     }
                                 ],
@@ -660,19 +660,38 @@ class VarietySpecialMapper(_PluginBase):
                     }
                 )
 
-            add_new_season = bool(config.get(f"rule_{rule_index}_add_new_season"))
             new_season_number = self._to_int(config.get(f"rule_{rule_index}_new_season_number"))
-            if add_new_season and new_season_number and new_season_number not in {
-                int(item.get("source_season") or 0) for item in seasons
-            }:
-                seasons.append(
+            if new_season_number:
+                new_season_types: Dict[str, Dict[str, List[str]]] = {}
+                for type_key in rule_type_keys:
+                    source_keywords = self._split_multiline(
+                        config.get(f"rule_{rule_index}_new_season_type_{type_key}_source_keywords_text")
+                    )
+                    tmdb_keywords = self._split_multiline(
+                        config.get(f"rule_{rule_index}_new_season_type_{type_key}_tmdb_keywords_text")
+                    )
+                    if source_keywords or tmdb_keywords:
+                        new_season_types[type_key] = {
+                            "source_keywords": source_keywords,
+                            "tmdb_keywords": tmdb_keywords,
+                        }
+
+                self._upsert_season_rule(
+                    seasons,
                     {
                         "source_season": new_season_number,
-                        "tmdb_season_number": new_season_number,
-                        "tmdb_season_matchers": [],
-                        "types": {},
-                        "manual_matches": [],
-                    }
+                        "tmdb_season_number": self._to_int(
+                            config.get(f"rule_{rule_index}_new_season_tmdb_season_number"),
+                            new_season_number,
+                        ) or new_season_number,
+                        "tmdb_season_matchers": self._split_multiline(
+                            config.get(f"rule_{rule_index}_new_season_tmdb_season_matchers_text")
+                        ),
+                        "types": new_season_types,
+                        "manual_matches": self._parse_manual_matches_text(
+                            config.get(f"rule_{rule_index}_new_season_manual_matches_text")
+                        ),
+                    },
                 )
 
             seasons = sorted(seasons, key=lambda item: int(item.get("source_season") or 0))
@@ -692,31 +711,105 @@ class VarietySpecialMapper(_PluginBase):
                 }
             )
 
-        create_new_rule = bool(config.get("new_rule_create"))
         new_rule_name = str(config.get("new_rule_name") or "").strip()
         new_rule_tmdbid = self._to_int(config.get("new_rule_tmdbid"))
-        if create_new_rule and new_rule_name and new_rule_tmdbid:
-            initial_seasons = self._split_multiline(config.get("new_rule_initial_seasons_text"))
-            parsed_seasons = [self._to_int(item) for item in initial_seasons]
+        if new_rule_name and new_rule_tmdbid:
+            main_season = self._to_int(config.get("new_rule_main_season")) or 1
+            first_season_number = self._to_int(config.get("new_rule_first_season_number"), main_season) or main_season
+            extra_seasons = self._split_multiline(config.get("new_rule_extra_seasons_text"))
+            parsed_seasons = [self._to_int(item) for item in extra_seasons]
             parsed_seasons = [item for item in parsed_seasons if item]
-            if not parsed_seasons:
-                parsed_seasons = [self._to_int(config.get("new_rule_main_season")) or 1]
+            season_numbers = [first_season_number] + parsed_seasons
+            season_numbers = sorted(set(season_numbers))
+
+            first_season_types: Dict[str, Dict[str, List[str]]] = {}
+            for type_key in common_type_keys:
+                source_keywords = self._split_multiline(config.get(f"new_rule_first_type_{type_key}_source_keywords_text"))
+                tmdb_keywords = self._split_multiline(config.get(f"new_rule_first_type_{type_key}_tmdb_keywords_text"))
+                if source_keywords or tmdb_keywords:
+                    first_season_types[type_key] = {
+                        "source_keywords": source_keywords,
+                        "tmdb_keywords": tmdb_keywords,
+                    }
+
+            seasons = [
+                {
+                    "source_season": season_number,
+                    "tmdb_season_number": season_number,
+                    "tmdb_season_matchers": [],
+                    "types": {},
+                    "manual_matches": [],
+                }
+                for season_number in season_numbers
+            ]
+            self._upsert_season_rule(
+                seasons,
+                {
+                    "source_season": first_season_number,
+                    "tmdb_season_number": self._to_int(config.get("new_rule_first_tmdb_season_number"), first_season_number)
+                    or first_season_number,
+                    "tmdb_season_matchers": self._split_multiline(config.get("new_rule_first_tmdb_season_matchers_text")),
+                    "types": first_season_types,
+                    "manual_matches": self._parse_manual_matches_text(config.get("new_rule_first_manual_matches_text")),
+                },
+            )
             rules.append(
                 {
                     "name": new_rule_name,
                     "tmdbid": new_rule_tmdbid,
                     "match_titles": self._split_multiline(config.get("new_rule_match_titles_text")),
-                    "main_season": self._to_int(config.get("new_rule_main_season")) or parsed_seasons[0],
+                    "main_season": main_season,
                     "specials_season": self._to_int(config.get("new_rule_specials_season"), 0) or 0,
                     "specials_folder": str(config.get("new_rule_specials_folder") or self._specials_folder or "Specials").strip() or "Specials",
-                    "seasons": [
-                        {"source_season": season_number, "tmdb_season_number": season_number, "tmdb_season_matchers": [], "types": {}, "manual_matches": []}
-                        for season_number in sorted(set(parsed_seasons))
-                    ],
+                    "seasons": seasons,
                 }
             )
 
         return self._normalize_common_types(common_types), self._normalize_rules(rules)
+
+    @staticmethod
+    def _upsert_season_rule(seasons: List[Dict[str, Any]], season_rule: Dict[str, Any]):
+        source_season = VarietySpecialMapper._to_int(season_rule.get("source_season"))
+        if not source_season:
+            return
+
+        for current in seasons:
+            if int(current.get("source_season") or 0) != int(source_season):
+                continue
+            current["tmdb_season_number"] = VarietySpecialMapper._to_int(
+                season_rule.get("tmdb_season_number"),
+                current.get("tmdb_season_number") or source_season,
+            ) or source_season
+
+            matchers = VarietySpecialMapper._split_multiline(season_rule.get("tmdb_season_matchers") or [])
+            if matchers:
+                current["tmdb_season_matchers"] = matchers
+
+            types_map = season_rule.get("types") or {}
+            if types_map:
+                current.setdefault("types", {}).update(types_map)
+
+            manual_matches = VarietySpecialMapper._normalize_manual_matches(season_rule.get("manual_matches") or [])
+            if manual_matches:
+                current["manual_matches"] = manual_matches
+            return
+
+        seasons.append(
+            {
+                "source_season": int(source_season),
+                "tmdb_season_number": VarietySpecialMapper._to_int(
+                    season_rule.get("tmdb_season_number"),
+                    source_season,
+                ) or int(source_season),
+                "tmdb_season_matchers": VarietySpecialMapper._split_multiline(
+                    season_rule.get("tmdb_season_matchers") or []
+                ),
+                "types": season_rule.get("types") or {},
+                "manual_matches": VarietySpecialMapper._normalize_manual_matches(
+                    season_rule.get("manual_matches") or []
+                ),
+            }
+        )
 
     def _normalize_common_types(self, common_types: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
         normalized = self._default_common_types()
@@ -1224,27 +1317,33 @@ class VarietySpecialMapper(_PluginBase):
         common_type_keys = self._get_common_type_keys()
         for type_key in common_type_keys:
             common_conf = self._common_types.get(type_key) or {}
-            model[f"common_type_{type_key}_source_keywords_text"] = self._join_multiline(common_conf.get("source_keywords") or [])
-            model[f"common_type_{type_key}_tmdb_keywords_text"] = self._join_multiline(common_conf.get("tmdb_keywords") or [])
+            model[f"common_type_{type_key}_source_keywords_text"] = list(common_conf.get("source_keywords") or [])
+            model[f"common_type_{type_key}_tmdb_keywords_text"] = list(common_conf.get("tmdb_keywords") or [])
 
         for rule_index, rule in enumerate(self._rules):
             rule_type_keys = self._get_rule_type_keys(rule)
             model[f"rule_{rule_index}_name"] = rule.get("name") or ""
             model[f"rule_{rule_index}_tmdbid"] = int(rule.get("tmdbid") or 0)
-            model[f"rule_{rule_index}_match_titles_text"] = self._join_multiline(rule.get("match_titles") or [])
+            model[f"rule_{rule_index}_match_titles_text"] = list(rule.get("match_titles") or [])
             model[f"rule_{rule_index}_main_season"] = int(rule.get("main_season") or 1)
             model[f"rule_{rule_index}_specials_season"] = int(rule.get("specials_season") or 0)
             model[f"rule_{rule_index}_specials_folder"] = rule.get("specials_folder") or self._specials_folder or "Specials"
             model[f"rule_{rule_index}_delete"] = False
-            model[f"rule_{rule_index}_add_new_season"] = False
             model[f"rule_{rule_index}_new_season_number"] = ""
+            model[f"rule_{rule_index}_new_season_tmdb_season_number"] = ""
+            model[f"rule_{rule_index}_new_season_tmdb_season_matchers_text"] = []
+            model[f"rule_{rule_index}_new_season_manual_matches_text"] = ""
+
+            for type_key in rule_type_keys:
+                model[f"rule_{rule_index}_new_season_type_{type_key}_source_keywords_text"] = []
+                model[f"rule_{rule_index}_new_season_type_{type_key}_tmdb_keywords_text"] = []
 
             for season_index, season_rule in enumerate(rule.get("seasons") or []):
                 model[f"rule_{rule_index}_season_{season_index}_number"] = int(season_rule.get("source_season") or 1)
                 model[f"rule_{rule_index}_season_{season_index}_tmdb_season_number"] = int(
                     season_rule.get("tmdb_season_number") or season_rule.get("source_season") or 1
                 )
-                model[f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text"] = self._join_multiline(
+                model[f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text"] = list(
                     season_rule.get("tmdb_season_matchers") or []
                 )
                 model[f"rule_{rule_index}_season_{season_index}_delete"] = False
@@ -1258,23 +1357,29 @@ class VarietySpecialMapper(_PluginBase):
                     type_conf = season_types.get(type_key) or {}
                     model[
                         f"rule_{rule_index}_season_{season_index}_type_{type_key}_source_keywords_text"
-                    ] = self._join_multiline(type_conf.get("source_keywords") or [])
+                    ] = list(type_conf.get("source_keywords") or [])
                     model[
                         f"rule_{rule_index}_season_{season_index}_type_{type_key}_tmdb_keywords_text"
-                    ] = self._join_multiline(type_conf.get("tmdb_keywords") or [])
+                    ] = list(type_conf.get("tmdb_keywords") or [])
 
         model.update(
             {
-                "new_rule_create": False,
                 "new_rule_name": "",
                 "new_rule_tmdbid": "",
-                "new_rule_match_titles_text": "",
+                "new_rule_match_titles_text": [],
                 "new_rule_main_season": 1,
                 "new_rule_specials_season": 0,
                 "new_rule_specials_folder": self._specials_folder or "Specials",
-                "new_rule_initial_seasons_text": "1",
+                "new_rule_first_season_number": 1,
+                "new_rule_first_tmdb_season_number": "",
+                "new_rule_first_tmdb_season_matchers_text": [],
+                "new_rule_first_manual_matches_text": "",
+                "new_rule_extra_seasons_text": [],
             }
         )
+        for type_key in common_type_keys:
+            model[f"new_rule_first_type_{type_key}_source_keywords_text"] = []
+            model[f"new_rule_first_type_{type_key}_tmdb_keywords_text"] = []
         return model
 
     def _build_rule_panel(self, rule_index: int, rule: Dict[str, Any], type_keys: List[str]) -> Dict[str, Any]:
@@ -1392,16 +1497,12 @@ class VarietySpecialMapper(_PluginBase):
                                     "component": "VCol",
                                     "props": {"cols": 12},
                                     "content": [
-                                        {
-                                            "component": "VTextarea",
-                                            "props": {
-                                                "model": f"rule_{rule_index}_match_titles_text",
-                                                "label": "匹配标题 / 别名",
-                                                "rows": 3,
-                                                "autoGrow": True,
-                                                "placeholder": "每行一个，如\n喜人奇妙夜\nAmazing Night\nAmazing.Night",
-                                            },
-                                        }
+                                        self._build_keyword_combobox(
+                                            model=f"rule_{rule_index}_match_titles_text",
+                                            label="匹配标题 / 别名",
+                                            placeholder="输入一个别名后按回车，例如：喜人奇妙夜 / Amazing Night",
+                                            hint="支持直接新增、删除别名。",
+                                        )
                                     ],
                                 }
                             ],
@@ -1444,13 +1545,22 @@ class VarietySpecialMapper(_PluginBase):
                         "component": "VExpansionPanelText",
                         "content": [
                             {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "info",
+                                    "variant": "tonal",
+                                    "title": "JSON 模板",
+                                    "text": "仅在极少数特殊命名时使用。示例：[{\"type\":\"bonus\",\"source_keywords\":[\"超前彩蛋\"],\"index\":1,\"target_episode\":3}]\n含义：当文件名包含超前彩蛋，且识别到是第 1 期时，强制映射到特别篇第 3 集。",
+                                },
+                            },
+                            {
                                 "component": "VTextarea",
                                 "props": {
                                     "model": f"rule_{rule_index}_season_{season_index}_manual_matches_text",
                                     "label": "manual_matches JSON",
                                     "rows": 6,
                                     "autoGrow": True,
-                                    "placeholder": "如有极少数非常规命名，再填这里；平时留空即可。",
+                                    "placeholder": "[\n  {\n    \"type\": \"bonus\",\n    \"source_keywords\": [\"超前彩蛋\"],\n    \"index\": 1,\n    \"target_episode\": 3\n  }\n]",
                                 },
                             }
                         ],
@@ -1523,17 +1633,12 @@ class VarietySpecialMapper(_PluginBase):
                                     "component": "VCol",
                                     "props": {"cols": 12},
                                     "content": [
-                                        {
-                                            "component": "VTextarea",
-                                            "props": {
-                                                "model": f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text",
-                                                "label": "TMDB 季识别关键词（可选）",
-                                                "rows": 2,
-                                                "autoGrow": True,
-                                                "placeholder": "每行一个，例如\n2026\n春游篇\n第八季",
-                                                "hint": "TMDB 特别篇标题不写第几季时，可以用年份或固定文案把它归到这个来源季。",
-                                            },
-                                        }
+                                        self._build_keyword_combobox(
+                                            model=f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text",
+                                            label="TMDB 季识别关键词（可选）",
+                                            placeholder="输入后回车，例如：2026 / 春游篇 / 第八季",
+                                            hint="TMDB 特别篇标题不写第几季时，可以用年份或固定文案把它归到这个来源季。",
+                                        )
                                     ],
                                 }
                             ],
@@ -1549,22 +1654,75 @@ class VarietySpecialMapper(_PluginBase):
         }
 
     def _build_add_season_panel(self, rule_index: int) -> Dict[str, Any]:
+        rule = self._rules[rule_index] if rule_index < len(self._rules) else {}
+        type_keys = self._get_rule_type_keys(rule)
+        new_season_type_panels = [
+            self._build_type_panel(
+                title=self._type_label(type_key),
+                source_model=f"rule_{rule_index}_new_season_type_{type_key}_source_keywords_text",
+                tmdb_model=f"rule_{rule_index}_new_season_type_{type_key}_tmdb_keywords_text",
+            )
+            for type_key in type_keys
+        ]
+        new_season_type_panels.append(
+            {
+                "component": "VExpansionPanel",
+                "content": [
+                    {
+                        "component": "VExpansionPanelTitle",
+                        "text": "高级手工匹配（可选）",
+                    },
+                    {
+                        "component": "VExpansionPanelText",
+                        "content": [
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "info",
+                                    "variant": "tonal",
+                                    "title": "JSON 模板",
+                                    "text": "示例：[{\"type\":\"bonus\",\"source_keywords\":[\"超前彩蛋\"],\"index\":1,\"target_episode\":3}]",
+                                },
+                            },
+                            {
+                                "component": "VTextarea",
+                                "props": {
+                                    "model": f"rule_{rule_index}_new_season_manual_matches_text",
+                                    "label": "manual_matches JSON",
+                                    "rows": 6,
+                                    "autoGrow": True,
+                                    "placeholder": "[\n  {\n    \"type\": \"bonus\",\n    \"source_keywords\": [\"超前彩蛋\"],\n    \"index\": 1,\n    \"target_episode\": 3\n  }\n]",
+                                },
+                            },
+                        ],
+                    },
+                ],
+            }
+        )
         return {
             "component": "VExpansionPanel",
             "content": [
                 {
                     "component": "VExpansionPanelTitle",
-                    "text": "新增一个季规则",
+                    "text": "新增一个季规则（填完后统一保存）",
                 },
                 {
                     "component": "VExpansionPanelText",
                     "content": [
                         {
+                            "component": "VAlert",
+                            "props": {
+                                "type": "info",
+                                "variant": "tonal",
+                                "text": "这里不用先点一次保存再回来改内容了。把季号、识别词、关键词都填好，最后统一保存一次就行。",
+                            },
+                        },
+                        {
                             "component": "VRow",
                             "content": [
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 6},
+                                    "props": {"cols": 12, "md": 4},
                                     "content": [
                                         {
                                             "component": "VTextField",
@@ -1579,35 +1737,125 @@ class VarietySpecialMapper(_PluginBase):
                                 },
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 6},
+                                    "props": {"cols": 12, "md": 4},
                                     "content": [
                                         {
-                                            "component": "VSwitch",
+                                            "component": "VTextField",
                                             "props": {
-                                                "model": f"rule_{rule_index}_add_new_season",
-                                                "label": "保存时新增该季",
+                                                "model": f"rule_{rule_index}_new_season_tmdb_season_number",
+                                                "label": "TMDB 正片季号",
+                                                "type": "number",
+                                                "placeholder": "留空则等于新季号",
+                                            },
+                                        }
+                                    ],
+                                },
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12, "md": 4},
+                                    "content": [
+                                        {
+                                            "component": "VAlert",
+                                            "props": {
+                                                "type": "warning",
+                                                "variant": "tonal",
+                                                "text": "只要新季号有值，保存时就会自动创建这季。",
                                             },
                                         }
                                     ],
                                 },
                             ],
-                        }
+                        },
+                        {
+                            "component": "VRow",
+                            "content": [
+                                {
+                                    "component": "VCol",
+                                    "props": {"cols": 12},
+                                    "content": [
+                                        self._build_keyword_combobox(
+                                            model=f"rule_{rule_index}_new_season_tmdb_season_matchers_text",
+                                            label="TMDB 季识别关键词（可选）",
+                                            placeholder="输入后回车，例如：2026 / 春游篇 / 第八季",
+                                            hint="用于把 TMDB 特别篇标题归到这个来源季。",
+                                        )
+                                    ],
+                                }
+                            ],
+                        },
+                        {
+                            "component": "VExpansionPanels",
+                            "props": {"multiple": True, "popout": True},
+                            "content": new_season_type_panels,
+                        },
                     ],
                 },
             ],
         }
 
     def _build_new_rule_panel(self) -> Dict[str, Any]:
+        type_keys = self._get_common_type_keys()
+        first_season_type_panels = [
+            self._build_type_panel(
+                title=self._type_label(type_key),
+                source_model=f"new_rule_first_type_{type_key}_source_keywords_text",
+                tmdb_model=f"new_rule_first_type_{type_key}_tmdb_keywords_text",
+            )
+            for type_key in type_keys
+        ]
+        first_season_type_panels.append(
+            {
+                "component": "VExpansionPanel",
+                "content": [
+                    {
+                        "component": "VExpansionPanelTitle",
+                        "text": "高级手工匹配（可选）",
+                    },
+                    {
+                        "component": "VExpansionPanelText",
+                        "content": [
+                            {
+                                "component": "VAlert",
+                                "props": {
+                                    "type": "info",
+                                    "variant": "tonal",
+                                    "title": "JSON 模板",
+                                    "text": "示例：[{\"type\":\"bonus\",\"source_keywords\":[\"超前彩蛋\"],\"index\":1,\"target_episode\":3}]",
+                                },
+                            },
+                            {
+                                "component": "VTextarea",
+                                "props": {
+                                    "model": "new_rule_first_manual_matches_text",
+                                    "label": "manual_matches JSON",
+                                    "rows": 6,
+                                    "autoGrow": True,
+                                    "placeholder": "[\n  {\n    \"type\": \"bonus\",\n    \"source_keywords\": [\"超前彩蛋\"],\n    \"index\": 1,\n    \"target_episode\": 3\n  }\n]",
+                                },
+                            },
+                        ],
+                    },
+                ],
+            }
+        )
         return {
             "component": "VExpansionPanel",
             "content": [
                 {
                     "component": "VExpansionPanelTitle",
-                    "text": "新增节目规则",
+                    "text": "新增节目规则（填完后统一保存）",
                 },
                 {
                     "component": "VExpansionPanelText",
                     "content": [
+                        {
+                            "component": "VAlert",
+                            "props": {
+                                "type": "info",
+                                "variant": "tonal",
+                                "text": "这里可以一次把节目基础信息和首个季规则一起填完。只要节目名称和 TMDB ID 有值，保存时就会自动创建。",
+                            },
+                        },
                         {
                             "component": "VRow",
                             "content": [
@@ -1643,10 +1891,11 @@ class VarietySpecialMapper(_PluginBase):
                                     "props": {"cols": 12, "md": 4},
                                     "content": [
                                         {
-                                            "component": "VSwitch",
+                                            "component": "VAlert",
                                             "props": {
-                                                "model": "new_rule_create",
-                                                "label": "保存时新增这个节目",
+                                                "type": "warning",
+                                                "variant": "tonal",
+                                                "text": "保存时自动创建，无需再勾选。",
                                             },
                                         }
                                     ],
@@ -1707,34 +1956,102 @@ class VarietySpecialMapper(_PluginBase):
                                     "component": "VCol",
                                     "props": {"cols": 12, "md": 6},
                                     "content": [
-                                        {
-                                            "component": "VTextarea",
-                                            "props": {
-                                                "model": "new_rule_match_titles_text",
-                                                "label": "匹配标题 / 别名",
-                                                "rows": 3,
-                                                "autoGrow": True,
-                                                "placeholder": "每行一个",
-                                            },
-                                        }
+                                        self._build_keyword_combobox(
+                                            model="new_rule_match_titles_text",
+                                            label="匹配标题 / 别名",
+                                            placeholder="输入一个别名后按回车",
+                                            hint="可留空，默认也会按节目名称匹配。",
+                                        )
                                     ],
                                 },
                                 {
                                     "component": "VCol",
                                     "props": {"cols": 12, "md": 6},
                                     "content": [
-                                        {
-                                            "component": "VTextarea",
-                                            "props": {
-                                                "model": "new_rule_initial_seasons_text",
-                                                "label": "初始化季号",
-                                                "rows": 3,
-                                                "autoGrow": True,
-                                                "placeholder": "每行一个或逗号分隔，如\n1\n2",
-                                            },
-                                        }
+                                        self._build_keyword_combobox(
+                                            model="new_rule_extra_seasons_text",
+                                            label="额外初始化季号（可选）",
+                                            placeholder="输入后回车，例如：2 / 3",
+                                            hint="首个季规则在下面单独配置；这里填的是额外先建出来的空季。",
+                                        )
                                     ],
                                 },
+                            ],
+                        },
+                        {
+                            "component": "VExpansionPanels",
+                            "props": {"multiple": True, "popout": True},
+                            "content": [
+                                {
+                                    "component": "VExpansionPanel",
+                                    "content": [
+                                        {
+                                            "component": "VExpansionPanelTitle",
+                                            "text": "首个季规则",
+                                        },
+                                        {
+                                            "component": "VExpansionPanelText",
+                                            "content": [
+                                                {
+                                                    "component": "VRow",
+                                                    "content": [
+                                                        {
+                                                            "component": "VCol",
+                                                            "props": {"cols": 12, "md": 6},
+                                                            "content": [
+                                                                {
+                                                                    "component": "VTextField",
+                                                                    "props": {
+                                                                        "model": "new_rule_first_season_number",
+                                                                        "label": "首个季号",
+                                                                        "type": "number",
+                                                                    },
+                                                                }
+                                                            ],
+                                                        },
+                                                        {
+                                                            "component": "VCol",
+                                                            "props": {"cols": 12, "md": 6},
+                                                            "content": [
+                                                                {
+                                                                    "component": "VTextField",
+                                                                    "props": {
+                                                                        "model": "new_rule_first_tmdb_season_number",
+                                                                        "label": "TMDB 正片季号",
+                                                                        "type": "number",
+                                                                        "placeholder": "留空则等于首个季号",
+                                                                    },
+                                                                }
+                                                            ],
+                                                        },
+                                                    ],
+                                                },
+                                                {
+                                                    "component": "VRow",
+                                                    "content": [
+                                                        {
+                                                            "component": "VCol",
+                                                            "props": {"cols": 12},
+                                                            "content": [
+                                                                self._build_keyword_combobox(
+                                                                    model="new_rule_first_tmdb_season_matchers_text",
+                                                                    label="TMDB 季识别关键词（可选）",
+                                                                    placeholder="输入后回车，例如：2026 / 春游篇 / 第八季",
+                                                                    hint="TMDB 标题不直接写第几季时，用这里补充识别词。",
+                                                                )
+                                                            ],
+                                                        }
+                                                    ],
+                                                },
+                                                {
+                                                    "component": "VExpansionPanels",
+                                                    "props": {"multiple": True, "popout": True},
+                                                    "content": first_season_type_panels,
+                                                },
+                                            ],
+                                        },
+                                    ],
+                                }
                             ],
                         },
                     ],
@@ -1760,39 +2077,57 @@ class VarietySpecialMapper(_PluginBase):
                                     "component": "VCol",
                                     "props": {"cols": 12, "md": 6},
                                     "content": [
-                                        {
-                                            "component": "VTextarea",
-                                            "props": {
-                                                "model": source_model,
-                                                "label": "源文件名关键词",
-                                                "rows": 4,
-                                                "autoGrow": True,
-                                                "placeholder": "每行一个关键词",
-                                            },
-                                        }
+                                        self._build_keyword_combobox(
+                                            model=source_model,
+                                            label="源文件名关键词",
+                                            placeholder="输入一个关键词后按回车",
+                                        )
                                     ],
                                 },
                                 {
                                     "component": "VCol",
                                     "props": {"cols": 12, "md": 6},
                                     "content": [
-                                        {
-                                            "component": "VTextarea",
-                                            "props": {
-                                                "model": tmdb_model,
-                                                "label": "TMDB 标题关键词",
-                                                "rows": 4,
-                                                "autoGrow": True,
-                                                "placeholder": "每行一个关键词",
-                                            },
-                                        }
+                                        self._build_keyword_combobox(
+                                            model=tmdb_model,
+                                            label="TMDB 标题关键词",
+                                            placeholder="输入一个关键词后按回车",
+                                        )
                                     ],
                                 },
                             ],
-                        }
+                        },
+                        {
+                            "component": "VAlert",
+                            "props": {
+                                "type": "info",
+                                "variant": "tonal",
+                                "text": "输入关键词后按回车即可新增，点关键词右侧 × 可删除；要改词时删掉后重新输入。",
+                            },
+                        },
                     ],
                 },
             ],
+        }
+
+    @staticmethod
+    def _build_keyword_combobox(model: str, label: str, placeholder: str, hint: Optional[str] = None) -> Dict[str, Any]:
+        props: Dict[str, Any] = {
+            "model": model,
+            "label": label,
+            "placeholder": placeholder,
+            "multiple": True,
+            "chips": True,
+            "closableChips": True,
+            "clearable": True,
+            "hideSelected": True,
+        }
+        if hint:
+            props["hint"] = hint
+            props["persistentHint"] = True
+        return {
+            "component": "VCombobox",
+            "props": props,
         }
 
     @classmethod
