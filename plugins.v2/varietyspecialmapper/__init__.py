@@ -20,7 +20,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.4.2"
+    plugin_version = "0.4.3"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -1317,33 +1317,33 @@ class VarietySpecialMapper(_PluginBase):
         common_type_keys = self._get_common_type_keys()
         for type_key in common_type_keys:
             common_conf = self._common_types.get(type_key) or {}
-            model[f"common_type_{type_key}_source_keywords_text"] = list(common_conf.get("source_keywords") or [])
-            model[f"common_type_{type_key}_tmdb_keywords_text"] = list(common_conf.get("tmdb_keywords") or [])
+            model[f"common_type_{type_key}_source_keywords_text"] = self._join_multiline(common_conf.get("source_keywords") or [])
+            model[f"common_type_{type_key}_tmdb_keywords_text"] = self._join_multiline(common_conf.get("tmdb_keywords") or [])
 
         for rule_index, rule in enumerate(self._rules):
             rule_type_keys = self._get_rule_type_keys(rule)
             model[f"rule_{rule_index}_name"] = rule.get("name") or ""
             model[f"rule_{rule_index}_tmdbid"] = int(rule.get("tmdbid") or 0)
-            model[f"rule_{rule_index}_match_titles_text"] = list(rule.get("match_titles") or [])
+            model[f"rule_{rule_index}_match_titles_text"] = self._join_multiline(rule.get("match_titles") or [])
             model[f"rule_{rule_index}_main_season"] = int(rule.get("main_season") or 1)
             model[f"rule_{rule_index}_specials_season"] = int(rule.get("specials_season") or 0)
             model[f"rule_{rule_index}_specials_folder"] = rule.get("specials_folder") or self._specials_folder or "Specials"
             model[f"rule_{rule_index}_delete"] = False
             model[f"rule_{rule_index}_new_season_number"] = ""
             model[f"rule_{rule_index}_new_season_tmdb_season_number"] = ""
-            model[f"rule_{rule_index}_new_season_tmdb_season_matchers_text"] = []
+            model[f"rule_{rule_index}_new_season_tmdb_season_matchers_text"] = ""
             model[f"rule_{rule_index}_new_season_manual_matches_text"] = ""
 
             for type_key in rule_type_keys:
-                model[f"rule_{rule_index}_new_season_type_{type_key}_source_keywords_text"] = []
-                model[f"rule_{rule_index}_new_season_type_{type_key}_tmdb_keywords_text"] = []
+                model[f"rule_{rule_index}_new_season_type_{type_key}_source_keywords_text"] = ""
+                model[f"rule_{rule_index}_new_season_type_{type_key}_tmdb_keywords_text"] = ""
 
             for season_index, season_rule in enumerate(rule.get("seasons") or []):
                 model[f"rule_{rule_index}_season_{season_index}_number"] = int(season_rule.get("source_season") or 1)
                 model[f"rule_{rule_index}_season_{season_index}_tmdb_season_number"] = int(
                     season_rule.get("tmdb_season_number") or season_rule.get("source_season") or 1
                 )
-                model[f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text"] = list(
+                model[f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text"] = self._join_multiline(
                     season_rule.get("tmdb_season_matchers") or []
                 )
                 model[f"rule_{rule_index}_season_{season_index}_delete"] = False
@@ -1357,29 +1357,29 @@ class VarietySpecialMapper(_PluginBase):
                     type_conf = season_types.get(type_key) or {}
                     model[
                         f"rule_{rule_index}_season_{season_index}_type_{type_key}_source_keywords_text"
-                    ] = list(type_conf.get("source_keywords") or [])
+                    ] = self._join_multiline(type_conf.get("source_keywords") or [])
                     model[
                         f"rule_{rule_index}_season_{season_index}_type_{type_key}_tmdb_keywords_text"
-                    ] = list(type_conf.get("tmdb_keywords") or [])
+                    ] = self._join_multiline(type_conf.get("tmdb_keywords") or [])
 
         model.update(
             {
                 "new_rule_name": "",
                 "new_rule_tmdbid": "",
-                "new_rule_match_titles_text": [],
+                "new_rule_match_titles_text": "",
                 "new_rule_main_season": 1,
                 "new_rule_specials_season": 0,
                 "new_rule_specials_folder": self._specials_folder or "Specials",
                 "new_rule_first_season_number": 1,
                 "new_rule_first_tmdb_season_number": "",
-                "new_rule_first_tmdb_season_matchers_text": [],
+                "new_rule_first_tmdb_season_matchers_text": "",
                 "new_rule_first_manual_matches_text": "",
-                "new_rule_extra_seasons_text": [],
+                "new_rule_extra_seasons_text": "",
             }
         )
         for type_key in common_type_keys:
-            model[f"new_rule_first_type_{type_key}_source_keywords_text"] = []
-            model[f"new_rule_first_type_{type_key}_tmdb_keywords_text"] = []
+            model[f"new_rule_first_type_{type_key}_source_keywords_text"] = ""
+            model[f"new_rule_first_type_{type_key}_tmdb_keywords_text"] = ""
         return model
 
     def _build_rule_panel(self, rule_index: int, rule: Dict[str, Any], type_keys: List[str]) -> Dict[str, Any]:
@@ -2102,7 +2102,7 @@ class VarietySpecialMapper(_PluginBase):
                             "props": {
                                 "type": "info",
                                 "variant": "tonal",
-                                "text": "输入关键词后按回车即可新增，点关键词右侧 × 可删除；要改词时删掉后重新输入。",
+                                "text": "关键词改回稳定的多行输入：每行一个，直接增删改文本后保存即可。",
                             },
                         },
                     ],
@@ -2116,17 +2116,15 @@ class VarietySpecialMapper(_PluginBase):
             "model": model,
             "label": label,
             "placeholder": placeholder,
-            "multiple": True,
-            "chips": True,
-            "closableChips": True,
             "clearable": True,
-            "hideSelected": True,
+            "autoGrow": True,
+            "rows": 3,
         }
         if hint:
             props["hint"] = hint
             props["persistentHint"] = True
         return {
-            "component": "VCombobox",
+            "component": "VTextarea",
             "props": props,
         }
 
