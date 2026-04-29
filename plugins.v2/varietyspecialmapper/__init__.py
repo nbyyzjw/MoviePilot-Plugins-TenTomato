@@ -20,7 +20,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.4.3"
+    plugin_version = "0.4.4"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -37,29 +37,33 @@ class VarietySpecialMapper(_PluginBase):
     _original_async_recognize_media = None
 
     TYPE_ORDER = ["pilot", "bonus", "program", "plus", "pure", "watch", "chat", "punish", "party"]
-    UI_SCHEMA_VERSION = "interactive_v4"
+    UI_SCHEMA_VERSION = "interactive_v5"
 
-    COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, List[str]]] = {
+    COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, Any]] = {
         "pilot": {
+            "label": "先导",
             "source_keywords": ["先导"],
             "tmdb_keywords": ["先导"],
         },
         "bonus": {
+            "label": "彩蛋",
             "source_keywords": ["彩蛋"],
             "tmdb_keywords": ["彩蛋"],
         },
         "program": {
+            "label": "企划",
             "source_keywords": ["企划"],
             "tmdb_keywords": ["企划"],
         },
         "plus": {
+            "label": "加更",
             "source_keywords": ["加更"],
             "tmdb_keywords": ["加更"],
         },
     }
 
     @classmethod
-    def _default_common_types(cls) -> Dict[str, Dict[str, List[str]]]:
+    def _default_common_types(cls) -> Dict[str, Dict[str, Any]]:
         return copy.deepcopy(cls.COMMON_TYPES_TEMPLATE)
 
     @staticmethod
@@ -244,9 +248,9 @@ class VarietySpecialMapper(_PluginBase):
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         model = self._build_form_model()
-        common_type_keys = self._get_common_type_keys()
+        common_type_keys = self._get_common_type_keys(self._common_types)
         show_panels = [
-            self._build_rule_panel(rule_index, rule, self._get_rule_type_keys(rule))
+            self._build_rule_panel(rule_index, rule, self._get_rule_type_keys(rule, self._common_types))
             for rule_index, rule in enumerate(self._rules)
         ]
 
@@ -337,13 +341,9 @@ class VarietySpecialMapper(_PluginBase):
                                                 "component": "VExpansionPanels",
                                                 "props": {"multiple": True, "popout": True},
                                                 "content": [
-                                                    self._build_type_panel(
-                                                        title=self._type_label(type_key),
-                                                        source_model=f"common_type_{type_key}_source_keywords_text",
-                                                        tmdb_model=f"common_type_{type_key}_tmdb_keywords_text",
-                                                    )
+                                                    self._build_common_type_panel(type_key)
                                                     for type_key in common_type_keys
-                                                ],
+                                                ] + [self._build_new_common_type_panel()],
                                             }
                                         ],
                                     },
@@ -547,7 +547,9 @@ class VarietySpecialMapper(_PluginBase):
         if isinstance(common_types_raw, dict):
             common_types = self._normalize_common_types(common_types_raw)
         else:
-            common_types = self._normalize_common_types(self._load_json_data(common_types_raw, self._default_common_types()))
+            common_types = self._normalize_common_types(
+                self._load_json_data(common_types_raw, self._default_common_types()) if common_types_raw is not None else self._default_common_types()
+            )
 
         rules_raw = config.get("rules_data")
         if rules_raw:
@@ -563,6 +565,9 @@ class VarietySpecialMapper(_PluginBase):
 
         if config.get("ui_schema_version") != self.UI_SCHEMA_VERSION:
             needs_persist = True
+
+        deleted_builtin_common_keys = set(self._default_common_types().keys()) - set(common_types.keys())
+        rules = self._prune_deleted_types_from_rules(rules, deleted_builtin_common_keys)
 
         return common_types, rules, needs_persist
 
@@ -600,14 +605,32 @@ class VarietySpecialMapper(_PluginBase):
 
     def _parse_interactive_form_config(self, config: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, List[str]]], List[Dict[str, Any]]]:
         current_rules = self._normalize_rules(self._rules or self._default_rules_data())
-        common_types: Dict[str, Dict[str, List[str]]] = {}
-        common_type_keys = self._get_common_type_keys(self._common_types or self._default_common_types())
+        existing_common_types = self._normalize_common_types(self._common_types)
+        common_types: Dict[str, Dict[str, Any]] = {}
+        current_common_type_keys = self._get_common_type_keys(existing_common_types)
 
-        for type_key in common_type_keys:
+        for type_key in current_common_type_keys:
+            if bool(config.get(f"common_type_{type_key}_delete")):
+                continue
             common_types[type_key] = {
+                "label": self._normalize_type_label(config.get(f"common_type_{type_key}_label"), type_key),
                 "source_keywords": self._split_multiline(config.get(f"common_type_{type_key}_source_keywords_text")),
                 "tmdb_keywords": self._split_multiline(config.get(f"common_type_{type_key}_tmdb_keywords_text")),
             }
+
+        new_common_type_label = str(config.get("new_common_type_label") or "").strip()
+        if new_common_type_label:
+            new_type_key = self._resolve_new_common_type_key(new_common_type_label, common_types)
+            common_types[new_type_key] = {
+                "label": new_common_type_label,
+                "source_keywords": self._split_multiline(config.get("new_common_type_source_keywords_text")),
+                "tmdb_keywords": self._split_multiline(config.get("new_common_type_tmdb_keywords_text")),
+            }
+
+        common_types = self._normalize_common_types(common_types)
+        deleted_type_keys = set(current_common_type_keys) - set(common_types.keys())
+        current_rules = self._prune_deleted_types_from_rules(current_rules, deleted_type_keys)
+        common_type_keys = self._get_common_type_keys(common_types)
 
         rules: List[Dict[str, Any]] = []
         for rule_index in range(len(current_rules)):
@@ -811,11 +834,76 @@ class VarietySpecialMapper(_PluginBase):
             }
         )
 
-    def _normalize_common_types(self, common_types: Dict[str, Any]) -> Dict[str, Dict[str, List[str]]]:
-        normalized = self._default_common_types()
+    def _normalize_common_types(self, common_types: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        normalized: Dict[str, Dict[str, Any]] = {}
         for type_key, type_conf in (common_types or {}).items():
-            normalized[type_key] = self._normalize_type_conf(type_conf)
+            if not type_key:
+                continue
+            normalized[type_key] = {
+                "label": self._normalize_type_label((type_conf or {}).get("label"), type_key),
+                "source_keywords": self._split_multiline((type_conf or {}).get("source_keywords") or []),
+                "tmdb_keywords": self._split_multiline((type_conf or {}).get("tmdb_keywords") or []),
+            }
         return {key: normalized[key] for key in self._get_common_type_keys(normalized)}
+
+    @classmethod
+    def _builtin_type_labels(cls) -> Dict[str, str]:
+        return {
+            "pilot": "先导",
+            "bonus": "彩蛋",
+            "program": "企划",
+            "plus": "加更",
+            "pure": "纯享",
+            "watch": "陪看",
+            "chat": "夜聊",
+            "punish": "惩罚室",
+            "party": "聚会",
+        }
+
+    @classmethod
+    def _normalize_type_label(cls, label: Any, type_key: str) -> str:
+        value = str(label or "").strip()
+        if value:
+            return value
+        return cls._builtin_type_labels().get(type_key, type_key)
+
+    @classmethod
+    def _find_builtin_type_key_by_label(cls, label: str) -> Optional[str]:
+        normalized = str(label or "").strip()
+        for type_key, type_label in cls._builtin_type_labels().items():
+            if type_label == normalized:
+                return type_key
+        return None
+
+    def _resolve_new_common_type_key(self, label: str, common_types: Dict[str, Dict[str, Any]]) -> str:
+        builtin_key = self._find_builtin_type_key_by_label(label)
+        if builtin_key and builtin_key not in common_types:
+            return builtin_key
+        for type_key, type_conf in (common_types or {}).items():
+            if str((type_conf or {}).get("label") or "").strip() == str(label).strip():
+                return type_key
+        index = 1
+        while f"custom_{index}" in common_types:
+            index += 1
+        return f"custom_{index}"
+
+    def _prune_deleted_types_from_rules(self, rules: List[Dict[str, Any]], deleted_type_keys: set) -> List[Dict[str, Any]]:
+        if not deleted_type_keys:
+            return copy.deepcopy(rules)
+        pruned_rules = copy.deepcopy(rules)
+        for rule in pruned_rules:
+            for season_rule in rule.get("seasons") or []:
+                season_rule["types"] = {
+                    type_key: type_conf
+                    for type_key, type_conf in (season_rule.get("types") or {}).items()
+                    if type_key not in deleted_type_keys
+                }
+                season_rule["manual_matches"] = [
+                    item
+                    for item in (season_rule.get("manual_matches") or [])
+                    if str(item.get("type") or "").strip() not in deleted_type_keys
+                ]
+        return pruned_rules
 
     def _normalize_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         normalized_rules: List[Dict[str, Any]] = []
@@ -1314,36 +1402,38 @@ class VarietySpecialMapper(_PluginBase):
             "specials_folder": self._specials_folder,
         }
 
-        common_type_keys = self._get_common_type_keys()
+        common_type_keys = self._get_common_type_keys(self._common_types)
         for type_key in common_type_keys:
             common_conf = self._common_types.get(type_key) or {}
-            model[f"common_type_{type_key}_source_keywords_text"] = self._join_multiline(common_conf.get("source_keywords") or [])
-            model[f"common_type_{type_key}_tmdb_keywords_text"] = self._join_multiline(common_conf.get("tmdb_keywords") or [])
+            model[f"common_type_{type_key}_label"] = str(common_conf.get("label") or self._type_label(type_key)).strip()
+            model[f"common_type_{type_key}_source_keywords_text"] = list(common_conf.get("source_keywords") or [])
+            model[f"common_type_{type_key}_tmdb_keywords_text"] = list(common_conf.get("tmdb_keywords") or [])
+            model[f"common_type_{type_key}_delete"] = False
 
         for rule_index, rule in enumerate(self._rules):
-            rule_type_keys = self._get_rule_type_keys(rule)
+            rule_type_keys = self._get_rule_type_keys(rule, self._common_types)
             model[f"rule_{rule_index}_name"] = rule.get("name") or ""
             model[f"rule_{rule_index}_tmdbid"] = int(rule.get("tmdbid") or 0)
-            model[f"rule_{rule_index}_match_titles_text"] = self._join_multiline(rule.get("match_titles") or [])
+            model[f"rule_{rule_index}_match_titles_text"] = list(rule.get("match_titles") or [])
             model[f"rule_{rule_index}_main_season"] = int(rule.get("main_season") or 1)
             model[f"rule_{rule_index}_specials_season"] = int(rule.get("specials_season") or 0)
             model[f"rule_{rule_index}_specials_folder"] = rule.get("specials_folder") or self._specials_folder or "Specials"
             model[f"rule_{rule_index}_delete"] = False
             model[f"rule_{rule_index}_new_season_number"] = ""
             model[f"rule_{rule_index}_new_season_tmdb_season_number"] = ""
-            model[f"rule_{rule_index}_new_season_tmdb_season_matchers_text"] = ""
+            model[f"rule_{rule_index}_new_season_tmdb_season_matchers_text"] = []
             model[f"rule_{rule_index}_new_season_manual_matches_text"] = ""
 
             for type_key in rule_type_keys:
-                model[f"rule_{rule_index}_new_season_type_{type_key}_source_keywords_text"] = ""
-                model[f"rule_{rule_index}_new_season_type_{type_key}_tmdb_keywords_text"] = ""
+                model[f"rule_{rule_index}_new_season_type_{type_key}_source_keywords_text"] = []
+                model[f"rule_{rule_index}_new_season_type_{type_key}_tmdb_keywords_text"] = []
 
             for season_index, season_rule in enumerate(rule.get("seasons") or []):
                 model[f"rule_{rule_index}_season_{season_index}_number"] = int(season_rule.get("source_season") or 1)
                 model[f"rule_{rule_index}_season_{season_index}_tmdb_season_number"] = int(
                     season_rule.get("tmdb_season_number") or season_rule.get("source_season") or 1
                 )
-                model[f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text"] = self._join_multiline(
+                model[f"rule_{rule_index}_season_{season_index}_tmdb_season_matchers_text"] = list(
                     season_rule.get("tmdb_season_matchers") or []
                 )
                 model[f"rule_{rule_index}_season_{season_index}_delete"] = False
@@ -1357,29 +1447,32 @@ class VarietySpecialMapper(_PluginBase):
                     type_conf = season_types.get(type_key) or {}
                     model[
                         f"rule_{rule_index}_season_{season_index}_type_{type_key}_source_keywords_text"
-                    ] = self._join_multiline(type_conf.get("source_keywords") or [])
+                    ] = list(type_conf.get("source_keywords") or [])
                     model[
                         f"rule_{rule_index}_season_{season_index}_type_{type_key}_tmdb_keywords_text"
-                    ] = self._join_multiline(type_conf.get("tmdb_keywords") or [])
+                    ] = list(type_conf.get("tmdb_keywords") or [])
 
         model.update(
             {
                 "new_rule_name": "",
                 "new_rule_tmdbid": "",
-                "new_rule_match_titles_text": "",
+                "new_rule_match_titles_text": [],
                 "new_rule_main_season": 1,
                 "new_rule_specials_season": 0,
                 "new_rule_specials_folder": self._specials_folder or "Specials",
                 "new_rule_first_season_number": 1,
                 "new_rule_first_tmdb_season_number": "",
-                "new_rule_first_tmdb_season_matchers_text": "",
+                "new_rule_first_tmdb_season_matchers_text": [],
                 "new_rule_first_manual_matches_text": "",
-                "new_rule_extra_seasons_text": "",
+                "new_rule_extra_seasons_text": [],
+                "new_common_type_label": "",
+                "new_common_type_source_keywords_text": [],
+                "new_common_type_tmdb_keywords_text": [],
             }
         )
         for type_key in common_type_keys:
-            model[f"new_rule_first_type_{type_key}_source_keywords_text"] = ""
-            model[f"new_rule_first_type_{type_key}_tmdb_keywords_text"] = ""
+            model[f"new_rule_first_type_{type_key}_source_keywords_text"] = []
+            model[f"new_rule_first_type_{type_key}_tmdb_keywords_text"] = []
         return model
 
     def _build_rule_panel(self, rule_index: int, rule: Dict[str, Any], type_keys: List[str]) -> Dict[str, Any]:
@@ -1655,7 +1748,7 @@ class VarietySpecialMapper(_PluginBase):
 
     def _build_add_season_panel(self, rule_index: int) -> Dict[str, Any]:
         rule = self._rules[rule_index] if rule_index < len(self._rules) else {}
-        type_keys = self._get_rule_type_keys(rule)
+        type_keys = self._get_rule_type_keys(rule, self._common_types)
         new_season_type_panels = [
             self._build_type_panel(
                 title=self._type_label(type_key),
@@ -1794,7 +1887,7 @@ class VarietySpecialMapper(_PluginBase):
         }
 
     def _build_new_rule_panel(self) -> Dict[str, Any]:
-        type_keys = self._get_common_type_keys()
+        type_keys = self._get_common_type_keys(self._common_types)
         first_season_type_panels = [
             self._build_type_panel(
                 title=self._type_label(type_key),
@@ -2069,43 +2162,139 @@ class VarietySpecialMapper(_PluginBase):
                 },
                 {
                     "component": "VExpansionPanelText",
+                    "content": [self._build_type_panel_content(source_model=source_model, tmdb_model=tmdb_model)],
+                },
+            ],
+        }
+
+    def _build_common_type_panel(self, type_key: str) -> Dict[str, Any]:
+        return {
+            "component": "VExpansionPanel",
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "text": self._type_label(type_key),
+                },
+                {
+                    "component": "VExpansionPanelText",
                     "content": [
                         {
                             "component": "VRow",
                             "content": [
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 6},
+                                    "props": {"cols": 12, "md": 8},
                                     "content": [
-                                        self._build_keyword_combobox(
-                                            model=source_model,
-                                            label="源文件名关键词",
-                                            placeholder="输入一个关键词后按回车",
-                                        )
+                                        {
+                                            "component": "VTextField",
+                                            "props": {
+                                                "model": f"common_type_{type_key}_label",
+                                                "label": "分类名称",
+                                                "placeholder": "例如：先导 / 彩蛋 / 企划 / 加更",
+                                            },
+                                        }
                                     ],
                                 },
                                 {
                                     "component": "VCol",
-                                    "props": {"cols": 12, "md": 6},
+                                    "props": {"cols": 12, "md": 4},
                                     "content": [
-                                        self._build_keyword_combobox(
-                                            model=tmdb_model,
-                                            label="TMDB 标题关键词",
-                                            placeholder="输入一个关键词后按回车",
-                                        )
+                                        {
+                                            "component": "VSwitch",
+                                            "props": {
+                                                "model": f"common_type_{type_key}_delete",
+                                                "label": "保存时删除这一类",
+                                                "color": "error",
+                                            },
+                                        }
                                     ],
                                 },
                             ],
                         },
+                        self._build_type_panel_content(
+                            source_model=f"common_type_{type_key}_source_keywords_text",
+                            tmdb_model=f"common_type_{type_key}_tmdb_keywords_text",
+                        ),
+                    ],
+                },
+            ],
+        }
+
+    def _build_new_common_type_panel(self) -> Dict[str, Any]:
+        return {
+            "component": "VExpansionPanel",
+            "content": [
+                {
+                    "component": "VExpansionPanelTitle",
+                    "text": "新增一个关键词分类（填完后统一保存）",
+                },
+                {
+                    "component": "VExpansionPanelText",
+                    "content": [
                         {
                             "component": "VAlert",
                             "props": {
                                 "type": "info",
                                 "variant": "tonal",
-                                "text": "关键词改回稳定的多行输入：每行一个，直接增删改文本后保存即可。",
+                                "text": "这里新增的是分类名本身，比如新增“纯享”“夜聊”这一层；下面的标签词可以一起先填好。",
                             },
                         },
+                        {
+                            "component": "VTextField",
+                            "props": {
+                                "model": "new_common_type_label",
+                                "label": "新分类名称",
+                                "placeholder": "例如：纯享 / 夜聊 / 聚会",
+                            },
+                        },
+                        self._build_type_panel_content(
+                            source_model="new_common_type_source_keywords_text",
+                            tmdb_model="new_common_type_tmdb_keywords_text",
+                        ),
                     ],
+                },
+            ],
+        }
+
+    def _build_type_panel_content(self, source_model: str, tmdb_model: str) -> Dict[str, Any]:
+        return {
+            "component": "VCard",
+            "props": {"variant": "text"},
+            "content": [
+                {
+                    "component": "VRow",
+                    "content": [
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 6},
+                            "content": [
+                                self._build_keyword_combobox(
+                                    model=source_model,
+                                    label="源文件名关键词",
+                                    placeholder="输入一个关键词后按回车",
+                                )
+                            ],
+                        },
+                        {
+                            "component": "VCol",
+                            "props": {"cols": 12, "md": 6},
+                            "content": [
+                                self._build_keyword_combobox(
+                                    model=tmdb_model,
+                                    label="TMDB 标题关键词",
+                                    placeholder="输入一个关键词后按回车",
+                                )
+                            ],
+                        },
+                    ],
+                },
+                {
+                    "component": "VAlert",
+                    "props": {
+                        "type": "info",
+                        "variant": "tonal",
+                        "text": "输入关键词后按回车即可新增，点关键词右侧 × 可删除；需要改词时删掉重输即可。",
+                    },
                 },
             ],
         }
@@ -2116,32 +2305,23 @@ class VarietySpecialMapper(_PluginBase):
             "model": model,
             "label": label,
             "placeholder": placeholder,
+            "multiple": True,
+            "chips": True,
+            "closableChips": True,
             "clearable": True,
-            "autoGrow": True,
-            "rows": 3,
+            "hideSelected": True,
         }
         if hint:
             props["hint"] = hint
             props["persistentHint"] = True
         return {
-            "component": "VTextarea",
+            "component": "VCombobox",
             "props": props,
         }
 
-    @classmethod
-    def _type_label(cls, type_key: str) -> str:
-        labels = {
-            "pilot": "先导",
-            "bonus": "彩蛋",
-            "program": "企划",
-            "plus": "加更",
-            "pure": "纯享",
-            "watch": "陪看",
-            "chat": "夜聊",
-            "punish": "惩罚室",
-            "party": "聚会",
-        }
-        return labels.get(type_key, type_key)
+    def _type_label(self, type_key: str) -> str:
+        common_conf = self._common_types.get(type_key) or {}
+        return self._normalize_type_label(common_conf.get("label"), type_key)
 
     @classmethod
     def _get_common_type_keys(cls, common_types: Optional[Dict[str, Any]] = None) -> List[str]:
