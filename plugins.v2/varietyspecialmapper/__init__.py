@@ -4,6 +4,7 @@ import re
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+from fastapi import Request
 
 from app.chain import ChainBase
 from app.chain.tmdb import TmdbChain
@@ -20,7 +21,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.4.7"
+    plugin_version = "0.4.8"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -37,7 +38,7 @@ class VarietySpecialMapper(_PluginBase):
     _original_async_recognize_media = None
 
     TYPE_ORDER = ["pilot", "bonus", "program", "plus", "pure", "watch", "chat", "punish", "party"]
-    UI_SCHEMA_VERSION = "interactive_v6"
+    UI_SCHEMA_VERSION = "interactive_v7"
 
     COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, Any]] = {
         "pilot": {
@@ -244,7 +245,24 @@ class VarietySpecialMapper(_PluginBase):
         return []
 
     def get_api(self) -> List[Dict[str, Any]]:
-        return []
+        return [
+            {
+                "path": "/state",
+                "endpoint": self.get_editor_state,
+                "methods": ["GET"],
+                "auth": "bear",
+                "summary": "获取综艺特别篇纠偏编辑器状态",
+                "description": "返回配置页所需的结构化规则和最近纠偏记录",
+            },
+            {
+                "path": "/save_state",
+                "endpoint": self.save_editor_state,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "保存综艺特别篇纠偏编辑器状态",
+                "description": "保存结构化规则，供自定义 Vue 配置页自动保存使用",
+            },
+        ]
 
     def get_form(self) -> Tuple[List[dict], Dict[str, Any]]:
         model = self._build_form_model()
@@ -373,53 +391,12 @@ class VarietySpecialMapper(_PluginBase):
             }
         ], model
 
-    def get_page(self) -> List[dict]:
-        history = self.get_data("history") or []
-        history = history[:10]
-        content = [
-            {
-                "component": "VAlert",
-                "props": {
-                    "type": "info",
-                    "variant": "tonal",
-                    "title": "最近纠偏记录",
-                    "text": "这里只展示最近 10 条记录，便于排查规则是否命中。",
-                },
-            }
-        ]
-        if not history:
-            content.append(
-                {
-                    "component": "VCard",
-                    "props": {"class": "mt-3"},
-                    "content": [
-                        {
-                            "component": "VCardText",
-                            "text": "还没有纠偏记录。",
-                        }
-                    ],
-                }
-            )
-            return content
+    @staticmethod
+    def get_render_mode() -> Tuple[str, Optional[str]]:
+        return "vue", "dist/assets"
 
-        for item in history:
-            content.append(
-                {
-                    "component": "VCard",
-                    "props": {"class": "mt-3"},
-                    "content": [
-                        {"component": "VCardTitle", "text": item.get("show") or "未知节目"},
-                        {"component": "VCardText", "text": f"类型: {item.get('kind')}"},
-                        {"component": "VCardText", "text": f"原路径: {item.get('old_path')}"},
-                        {"component": "VCardText", "text": f"新路径: {item.get('new_path')}"},
-                        {
-                            "component": "VCardText",
-                            "text": f"目标集: S{int(item.get('target_season', 0)):02d}E{int(item.get('target_episode', 0)):02d}",
-                        },
-                    ],
-                }
-            )
-        return content
+    def get_page(self) -> List[dict]:
+        return None
 
     @eventmanager.register([
         EventType.TransferComplete,
@@ -578,6 +555,80 @@ class VarietySpecialMapper(_PluginBase):
         if any(current.get(key) != value for key, value in desired.items()) or set(current.keys()) != set(desired.keys()):
             self.update_config(desired)
             logger.info("已保存综艺特别篇纠偏插件的结构化规则配置")
+
+    def get_editor_state(self) -> Dict[str, Any]:
+        try:
+            return {
+                "code": 0,
+                "message": "success",
+                "data": self._build_editor_state(),
+            }
+        except Exception as err:
+            logger.error(f"获取综艺特别篇纠偏编辑器状态失败: {err}")
+            return {
+                "code": 1,
+                "message": f"获取状态失败: {err}",
+                "data": {},
+            }
+
+    async def save_editor_state(self, request: Request) -> Dict[str, Any]:
+        try:
+            payload = await self._read_request_json(request)
+            data = payload.get("data") if isinstance(payload, dict) and isinstance(payload.get("data"), dict) else payload
+            if not isinstance(data, dict):
+                raise ValueError("请求体不是合法的配置对象")
+
+            self._enabled = bool(data.get("enabled", False))
+            self._notify = bool(data.get("notify", False))
+            self._specials_folder = str(data.get("specials_folder") or "Specials").strip() or "Specials"
+            self._common_types = self._normalize_common_types(data.get("common_types") or self._default_common_types())
+            self._rules = self._normalize_rules(data.get("rules") or [])
+            self._tmdb_mapping_cache = {}
+
+            self._save_structured_config()
+            self.init_plugin(self.get_config() or {})
+
+            return {
+                "code": 0,
+                "message": "保存成功",
+                "data": self._build_editor_state(),
+            }
+        except Exception as err:
+            logger.error(f"保存综艺特别篇纠偏编辑器状态失败: {err}")
+            return {
+                "code": 1,
+                "message": f"保存失败: {err}",
+                "data": {},
+            }
+
+    def _build_editor_state(self) -> Dict[str, Any]:
+        history = copy.deepcopy((self.get_data("history") or [])[:10])
+        return {
+            "enabled": bool(self._enabled),
+            "notify": bool(self._notify),
+            "specials_folder": self._specials_folder or "Specials",
+            "common_types": copy.deepcopy(self._common_types or self._default_common_types()),
+            "rules": copy.deepcopy(self._rules or []),
+            "history": history,
+        }
+
+    @staticmethod
+    async def _read_request_json(request: Request) -> Dict[str, Any]:
+        body = await request.body()
+        if not body:
+            return {}
+        raw_text = body.decode("utf-8")
+        if not raw_text.strip():
+            return {}
+        try:
+            payload = json.loads(raw_text)
+        except json.JSONDecodeError as err:
+            raise ValueError(f"请求体 JSON 解析失败: {err}") from err
+        if payload is None:
+            return {}
+        if not isinstance(payload, dict):
+            raise ValueError("请求体必须是 JSON 对象")
+        return payload
 
     @staticmethod
     def _load_json_data(raw: Any, fallback: Any) -> Any:
