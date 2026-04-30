@@ -16,6 +16,12 @@
   - 支持关键词可视化新增 / 删除、统一保存新增节目和季规则
   - 默认内置《喜人奇妙夜》《妻子的浪漫旅行》示例规则
 
+- **IdentifierHelper / 自定义识别词助手**
+  - 可视化管理 MoviePilot 自定义识别词
+  - 支持树形分类、空分类/空子分类持久化
+  - 列表页操作即保存，原始文本页自动保存
+  - 适合把常用识别词按动漫、电影、字幕组、系列等维度整理
+
 ## 仓库结构
 
 ```text
@@ -23,6 +29,7 @@
 ├── icons/
 ├── package.v2.json
 └── plugins.v2/
+    ├── identifierhelper/
     ├── simpletextboard/
     └── varietyspecialmapper/
 ```

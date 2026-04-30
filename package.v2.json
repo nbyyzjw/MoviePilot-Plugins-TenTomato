@@ -8,6 +8,15 @@
     "author": "二狗",
     "level": 1
   },
+  "IdentifierHelper": {
+    "name": "自定义识别词助手",
+    "description": "可视化管理 MoviePilot 自定义识别词，支持树形分类、空分类持久化，以及操作即保存/原始文本自动保存。",
+    "labels": "识别词,整理,工具",
+    "version": "1.1.0",
+    "icon": "Identifier.png",
+    "author": "hankun / 二狗",
+    "level": 1
+  },
   "VarietySpecialMapper": {
     "name": "综艺特别篇纠偏",
     "description": "整理综艺文件时，按通用词库、节目、季号分层管理规则，在识别和整理阶段都把纯享、陪看、夜聊、惩罚室、聚会、彩蛋等内容映射到 TMDB 特别篇（S0）正确集数，并支持源季号和 TMDB 实际季号错位。",
