@@ -561,6 +561,8 @@ export default defineComponent({
       season: { ruleUid: '', source_season: '', tmdb_season_number: '', tmdb_season_matchers: [] },
     })
 
+    const createEmptyTypeBinding = () => ({ source_keywords: [], tmdb_keywords: [] })
+
     const hydrateState = (raw) => {
       const commonTypes = Object.entries(raw?.common_types || {}).map(([key, value]) => ({
         _uid: uid('type'),
@@ -575,6 +577,7 @@ export default defineComponent({
         return idx === -1 ? 999 : idx
       }
       commonTypes.sort((a, b) => orderIndex(a.key) - orderIndex(b.key) || a.label.localeCompare(b.label, 'zh-Hans-CN'))
+      const commonTypeKeys = commonTypes.map((item) => item.key)
 
       const rules = (raw?.rules || []).map((rule) => ({
         _uid: uid('rule'),
@@ -584,13 +587,8 @@ export default defineComponent({
         main_season: rule?.main_season ?? 1,
         specials_season: rule?.specials_season ?? 0,
         specials_folder: String(rule?.specials_folder || raw?.specials_folder || 'Specials'),
-        seasons: (rule?.seasons || []).map((season) => ({
-          _uid: uid('season'),
-          source_season: season?.source_season ?? 1,
-          tmdb_season_number: season?.tmdb_season_number ?? season?.source_season ?? 1,
-          tmdb_season_matchers: normalizeStringArray(season?.tmdb_season_matchers || []),
-          manual_matches_text: formatManualMatches(season?.manual_matches),
-          types: Object.fromEntries(
+        seasons: (rule?.seasons || []).map((season) => {
+          const types = Object.fromEntries(
             Object.entries(season?.types || {}).map(([typeKey, conf]) => [
               typeKey,
               {
@@ -598,8 +596,21 @@ export default defineComponent({
                 tmdb_keywords: normalizeStringArray(conf?.tmdb_keywords || []),
               },
             ])
-          ),
-        })),
+          )
+          commonTypeKeys.forEach((typeKey) => {
+            if (!types[typeKey]) {
+              types[typeKey] = createEmptyTypeBinding()
+            }
+          })
+          return {
+            _uid: uid('season'),
+            source_season: season?.source_season ?? 1,
+            tmdb_season_number: season?.tmdb_season_number ?? season?.source_season ?? 1,
+            tmdb_season_matchers: normalizeStringArray(season?.tmdb_season_matchers || []),
+            manual_matches_text: formatManualMatches(season?.manual_matches),
+            types,
+          }
+        }),
       }))
 
       return {
@@ -656,12 +667,7 @@ export default defineComponent({
       })
     }
 
-    const ensureTypeBinding = (season, typeKey) => {
-      if (!season.types[typeKey]) {
-        season.types[typeKey] = { source_keywords: [], tmdb_keywords: [] }
-      }
-      return season.types[typeKey]
-    }
+    const ensureTypeBinding = (season, typeKey) => season.types[typeKey] || createEmptyTypeBinding()
 
     const validationIssues = computed(() => {
       const issues = []
@@ -821,9 +827,7 @@ export default defineComponent({
           throw new Error(result?.message || '保存失败')
         }
         updateStateSilently(() => {
-          if (Array.isArray(result.data?.history)) {
-            state.value.history = result.data.history
-          }
+          state.value = hydrateState(result.data || {})
         })
         dirty.value = false
         saveStatus.value = 'saved'
@@ -865,6 +869,13 @@ export default defineComponent({
         label,
         source_keywords: normalizeStringArray(drafts.type.source_keywords),
         tmdb_keywords: normalizeStringArray(drafts.type.tmdb_keywords),
+      })
+      state.value.rules.forEach((rule) => {
+        rule.seasons.forEach((season) => {
+          if (!season.types[key]) {
+            season.types[key] = createEmptyTypeBinding()
+          }
+        })
       })
       dialogs.type = false
     }
@@ -909,7 +920,7 @@ export default defineComponent({
         tmdb_season_number: mainSeason,
         tmdb_season_matchers: [],
         manual_matches_text: '',
-        types: {},
+        types: Object.fromEntries(state.value.commonTypes.map((type) => [type.key, createEmptyTypeBinding()])),
       }
       state.value.rules.push({
         _uid: uid('rule'),
@@ -961,7 +972,7 @@ export default defineComponent({
         tmdb_season_number: toPositiveInt(drafts.season.tmdb_season_number, sourceSeason) || sourceSeason,
         tmdb_season_matchers: normalizeStringArray(drafts.season.tmdb_season_matchers),
         manual_matches_text: '',
-        types: {},
+        types: Object.fromEntries(state.value.commonTypes.map((type) => [type.key, createEmptyTypeBinding()])),
       })
       dialogs.season = false
     }

@@ -1,6 +1,6 @@
 import { importShared } from './__federation_fn_import-JrT3xvdd.js';
 import Page from './__federation_expose_Page-Cuxz2Pfz.js';
-import Config from './__federation_expose_Config-CJlLDZO3.js';
+import Config from './__federation_expose_Config-m2Zz8pc6.js';
 import { _ as _export_sfc } from './_plugin-vue_export-helper-pcqpp-6-.js';
 
 true&&(function polyfill() {
