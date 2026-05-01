@@ -279,6 +279,17 @@ const _sfc_main = defineComponent({
       }
     };
 
+    const updateStateSilently = (updater) => {
+      suspendAutosave.value = true;
+      try {
+        updater();
+      } finally {
+        setTimeout(() => {
+          suspendAutosave.value = false;
+        }, 0);
+      }
+    };
+
     const scheduleSave = (delay = 700) => {
       if (suspendAutosave.value) return
       clearSaveTimer();
@@ -302,17 +313,15 @@ const _sfc_main = defineComponent({
         if (!result || result.code !== 0) {
           throw new Error(result?.message || '加载配置失败')
         }
-        suspendAutosave.value = true;
-        state.value = hydrateState(result.data || {});
+        updateStateSilently(() => {
+          state.value = hydrateState(result.data || {});
+        });
         dirty.value = false;
         saveStatus.value = 'idle';
       } catch (error) {
         saveError.value = error?.message || '加载配置失败';
       } finally {
         loading.value = false;
-        setTimeout(() => {
-          suspendAutosave.value = false;
-        }, 0);
       }
     };
 
@@ -334,12 +343,14 @@ const _sfc_main = defineComponent({
         if (!result || result.code !== 0) {
           throw new Error(result?.message || '保存失败')
         }
+        updateStateSilently(() => {
+          if (Array.isArray(result.data?.history)) {
+            state.value.history = result.data.history;
+          }
+        });
         dirty.value = false;
         saveStatus.value = 'saved';
         lastSavedAt.value = new Date().toLocaleString('zh-CN', { hour12: false });
-        if (Array.isArray(result.data?.history)) {
-          state.value.history = result.data.history;
-        }
         return true
       } catch (error) {
         saveStatus.value = 'error';
@@ -1886,6 +1897,6 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
     }, 8, ["modelValue"])
   ]))
 }
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['render',_sfc_render],['__scopeId',"data-v-e9fa8ea2"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['render',_sfc_render],['__scopeId',"data-v-27b6a31c"]]);
 
 export { Config as default };

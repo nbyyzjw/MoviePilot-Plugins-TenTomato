@@ -756,6 +756,17 @@ export default defineComponent({
       }
     }
 
+    const updateStateSilently = (updater) => {
+      suspendAutosave.value = true
+      try {
+        updater()
+      } finally {
+        setTimeout(() => {
+          suspendAutosave.value = false
+        }, 0)
+      }
+    }
+
     const scheduleSave = (delay = 700) => {
       if (suspendAutosave.value) return
       clearSaveTimer()
@@ -779,17 +790,15 @@ export default defineComponent({
         if (!result || result.code !== 0) {
           throw new Error(result?.message || '加载配置失败')
         }
-        suspendAutosave.value = true
-        state.value = hydrateState(result.data || {})
+        updateStateSilently(() => {
+          state.value = hydrateState(result.data || {})
+        })
         dirty.value = false
         saveStatus.value = 'idle'
       } catch (error) {
         saveError.value = error?.message || '加载配置失败'
       } finally {
         loading.value = false
-        setTimeout(() => {
-          suspendAutosave.value = false
-        }, 0)
       }
     }
 
@@ -811,12 +820,14 @@ export default defineComponent({
         if (!result || result.code !== 0) {
           throw new Error(result?.message || '保存失败')
         }
+        updateStateSilently(() => {
+          if (Array.isArray(result.data?.history)) {
+            state.value.history = result.data.history
+          }
+        })
         dirty.value = false
         saveStatus.value = 'saved'
         lastSavedAt.value = new Date().toLocaleString('zh-CN', { hour12: false })
-        if (Array.isArray(result.data?.history)) {
-          state.value.history = result.data.history
-        }
         return true
       } catch (error) {
         saveStatus.value = 'error'
