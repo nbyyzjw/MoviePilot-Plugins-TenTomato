@@ -1,6 +1,8 @@
 import copy
+from datetime import datetime
 import json
 import re
+import requests
 import shutil
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,7 +23,7 @@ class VarietySpecialMapper(_PluginBase):
     plugin_name = "综艺特别篇纠偏"
     plugin_desc = "在整理入库后，自动把综艺彩蛋、纯享、陪看、夜聊等内容改到 TMDB 特别篇（S0）对应集数。"
     plugin_icon = "movie.jpg"
-    plugin_version = "0.4.10"
+    plugin_version = "0.4.11"
     plugin_author = "二狗"
     author_url = "https://github.com/nbyyzjw/MoviePilot-Plugins-TenTomato"
     plugin_config_prefix = "varietyspecialmapper_"
@@ -33,12 +35,17 @@ class VarietySpecialMapper(_PluginBase):
     _specials_folder = "Specials"
     _rules: List[Dict[str, Any]] = []
     _common_types: Dict[str, Dict[str, Any]] = {}
+    _subscription_enabled = True
+    _subscription_urls: List[str] = []
+    _subscription_last_sync: Dict[str, Any] = {}
     _tmdb_mapping_cache: Dict[str, Dict[str, Dict[int, int]]] = {}
     _original_recognize_media = None
     _original_async_recognize_media = None
 
     TYPE_ORDER = ["pilot", "bonus", "program", "plus", "pure", "watch", "chat", "punish", "party"]
-    UI_SCHEMA_VERSION = "interactive_v7"
+    UI_SCHEMA_VERSION = "interactive_v8"
+    DEFAULT_SUBSCRIPTION_URL = "https://raw.githubusercontent.com/nbyyzjw/MoviePilot-Plugins-TenTomato/main/plugins.v2/varietyspecialmapper/subscription.json"
+    BUNDLED_SUBSCRIPTION_FILE = Path(__file__).with_name("subscription.json")
 
     COMMON_TYPES_TEMPLATE: Dict[str, Dict[str, Any]] = {
         "pilot": {
@@ -69,52 +76,7 @@ class VarietySpecialMapper(_PluginBase):
 
     @staticmethod
     def _default_rules_data() -> List[Dict[str, Any]]:
-        return [
-            {
-                "name": "喜人奇妙夜",
-                "tmdbid": 257161,
-                "match_titles": ["喜人奇妙夜", "Amazing Night", "Amazing.Night"],
-                "main_season": 1,
-                "specials_season": 0,
-                "specials_folder": "Specials",
-                "seasons": [
-                    {
-                        "source_season": 1,
-                        "types": {
-                            "pilot": {
-                                "source_keywords": ["先导", "S01E00"],
-                                "tmdb_keywords": ["先导", "超前集结"],
-                            },
-                            "pure": {
-                                "source_keywords": ["纯享", ".Pure."],
-                                "tmdb_keywords": ["纯享"],
-                            },
-                            "watch": {
-                                "source_keywords": ["陪看", ".Watch."],
-                                "tmdb_keywords": ["陪看"],
-                            },
-                            "chat": {
-                                "source_keywords": ["夜聊", ".Chat."],
-                                "tmdb_keywords": ["夜聊"],
-                            },
-                            "punish": {
-                                "source_keywords": ["惩罚室", ".Punish."],
-                                "tmdb_keywords": ["惩罚室", "不好笑惩罚室"],
-                            },
-                            "party": {
-                                "source_keywords": ["聚会", "派对", ".Party."],
-                                "tmdb_keywords": ["聚会", "派对"],
-                            },
-                            "bonus": {
-                                "source_keywords": ["彩蛋", ".Bonus."],
-                                "tmdb_keywords": ["特辑"],
-                            },
-                        },
-                        "manual_matches": [],
-                    }
-                ],
-            }
-        ]
+        return []
 
     @staticmethod
     def _default_viva_la_romance_rule() -> Dict[str, Any]:
@@ -214,6 +176,13 @@ class VarietySpecialMapper(_PluginBase):
         self._enabled = bool(config.get("enabled", False))
         self._notify = bool(config.get("notify", False))
         self._specials_folder = (config.get("specials_folder") or "Specials").strip() or "Specials"
+        self._subscription_enabled = bool(config.get("subscription_enabled", True))
+        self._subscription_urls = self._normalize_subscription_urls(
+            self._load_json_data(config.get("subscription_urls_data"), self._default_subscription_urls())
+        )
+        self._subscription_last_sync = self._normalize_subscription_last_sync(
+            self._load_json_data(config.get("subscription_last_sync_data"), {})
+        )
 
         common_types, rules, needs_persist = self._load_structured_state(config)
         self._common_types = common_types
@@ -261,6 +230,14 @@ class VarietySpecialMapper(_PluginBase):
                 "auth": "bear",
                 "summary": "保存综艺特别篇纠偏编辑器状态",
                 "description": "保存结构化规则，供自定义 Vue 配置页自动保存使用",
+            },
+            {
+                "path": "/pull_subscription",
+                "endpoint": self.pull_subscription,
+                "methods": ["POST"],
+                "auth": "bear",
+                "summary": "同步综艺特别篇纠偏订阅配置",
+                "description": "从订阅地址拉取默认规则并安全合并到本地配置",
             },
         ]
 
@@ -513,29 +490,44 @@ class VarietySpecialMapper(_PluginBase):
 
     def _load_structured_state(self, config: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]], bool]:
         needs_persist = False
+        has_structured_state = any(key in config for key in ["common_types_data", "rules_data", "subscription_urls_data"])
 
-        if self._looks_like_interactive_form_submit(config):
-            common_types, rules = self._parse_interactive_form_config(config)
-            return common_types, rules, True
-
-        common_types_raw = config.get("common_types_data")
-        if isinstance(common_types_raw, dict):
-            common_types = self._normalize_common_types(common_types_raw)
-        else:
-            common_types = self._normalize_common_types(self._load_json_data(common_types_raw, self._default_common_types()))
-
-        rules_raw = config.get("rules_data")
-        if rules_raw:
-            rules = self._normalize_rules(self._load_json_data(rules_raw, self._default_rules_data()))
-        else:
-            legacy_rules_text = config.get("rules_text")
-            if legacy_rules_text:
-                rules = self._normalize_rules(self._load_json_data(legacy_rules_text, self._default_rules_data()))
-                needs_persist = True
+        if has_structured_state:
+            common_types_raw = config.get("common_types_data")
+            if isinstance(common_types_raw, dict):
+                common_types = self._normalize_common_types(common_types_raw)
             else:
-                rules = self._normalize_rules(self._default_rules_data())
-                needs_persist = True
+                common_types = self._normalize_common_types(
+                    self._load_json_data(common_types_raw, self._default_common_types())
+                )
 
+            rules_raw = config.get("rules_data")
+            if rules_raw is not None:
+                rules = self._normalize_rules(self._load_json_data(rules_raw, self._default_rules_data()))
+            else:
+                legacy_rules_text = config.get("rules_text")
+                if legacy_rules_text:
+                    rules = self._normalize_rules(self._load_json_data(legacy_rules_text, self._default_rules_data()))
+                    needs_persist = True
+                else:
+                    rules = self._normalize_rules(self._default_rules_data())
+                    needs_persist = True
+        elif self._looks_like_interactive_form_submit(config):
+            common_types, rules = self._parse_interactive_form_config(config)
+            needs_persist = True
+        else:
+            common_types, rules = self._load_initial_state_from_subscription()
+            needs_persist = True
+
+        if not common_types:
+            common_types = self._default_common_types()
+        if rules is None:
+            rules = []
+
+        if config.get("rules_text") is not None:
+            needs_persist = True
+        if self._looks_like_interactive_form_submit(config):
+            needs_persist = True
         if config.get("ui_schema_version") != self.UI_SCHEMA_VERSION:
             needs_persist = True
 
@@ -547,11 +539,13 @@ class VarietySpecialMapper(_PluginBase):
             "enabled": self._enabled,
             "notify": self._notify,
             "specials_folder": self._specials_folder,
+            "subscription_enabled": self._subscription_enabled,
             "ui_schema_version": self.UI_SCHEMA_VERSION,
             "common_types_data": json.dumps(self._common_types, ensure_ascii=False, indent=2),
             "rules_data": json.dumps(self._rules, ensure_ascii=False, indent=2),
+            "subscription_urls_data": json.dumps(self._subscription_urls, ensure_ascii=False, indent=2),
+            "subscription_last_sync_data": json.dumps(self._subscription_last_sync, ensure_ascii=False, indent=2),
         }
-        desired.update(self._build_form_model())
         if any(current.get(key) != value for key, value in desired.items()) or set(current.keys()) != set(desired.keys()):
             self.update_config(desired)
             logger.info("已保存综艺特别篇纠偏插件的结构化规则配置")
@@ -581,6 +575,8 @@ class VarietySpecialMapper(_PluginBase):
             self._enabled = bool(data.get("enabled", False))
             self._notify = bool(data.get("notify", False))
             self._specials_folder = str(data.get("specials_folder") or "Specials").strip() or "Specials"
+            self._subscription_enabled = bool(data.get("subscription_enabled", True))
+            self._subscription_urls = self._normalize_subscription_urls(data.get("subscription_urls"))
             self._common_types = self._normalize_common_types(data.get("common_types") or self._default_common_types())
             self._rules = self._normalize_rules(data.get("rules") or [])
             self._tmdb_mapping_cache = {}
@@ -601,16 +597,270 @@ class VarietySpecialMapper(_PluginBase):
                 "data": {},
             }
 
+    async def pull_subscription(self, request: Request) -> Dict[str, Any]:
+        try:
+            payload = await self._read_request_json(request)
+            mode = str(payload.get("mode") or "merge").strip().lower() if isinstance(payload, dict) else "merge"
+            imported, message = self._sync_subscription_into_state(replace=(mode == "replace"))
+            if not imported:
+                return {
+                    "code": 1,
+                    "message": message,
+                    "data": self._build_editor_state(),
+                }
+
+            self._save_structured_config()
+            self.init_plugin(self.get_config() or {})
+            return {
+                "code": 0,
+                "message": message,
+                "data": self._build_editor_state(),
+            }
+        except Exception as err:
+            logger.error(f"同步综艺特别篇纠偏订阅配置失败: {err}")
+            self._record_subscription_sync(status="error", message=str(err))
+            self._save_structured_config()
+            return {
+                "code": 1,
+                "message": f"同步失败: {err}",
+                "data": self._build_editor_state(),
+            }
+
     def _build_editor_state(self) -> Dict[str, Any]:
         history = copy.deepcopy((self.get_data("history") or [])[:10])
         return {
             "enabled": bool(self._enabled),
             "notify": bool(self._notify),
             "specials_folder": self._specials_folder or "Specials",
+            "subscription_enabled": bool(self._subscription_enabled),
+            "subscription_urls": copy.deepcopy(self._subscription_urls or self._default_subscription_urls()),
+            "subscription_last_sync": copy.deepcopy(self._subscription_last_sync or {}),
             "common_types": copy.deepcopy(self._common_types or self._default_common_types()),
             "rules": copy.deepcopy(self._rules or []),
             "history": history,
         }
+
+    @classmethod
+    def _default_subscription_urls(cls) -> List[str]:
+        return [cls.DEFAULT_SUBSCRIPTION_URL]
+
+    def _normalize_subscription_urls(self, raw: Any) -> List[str]:
+        urls = self._split_multiline(raw or [])
+        normalized: List[str] = []
+        seen = set()
+        for url in urls or self._default_subscription_urls():
+            clean = self._normalize_subscription_url(url)
+            if not clean or clean in seen:
+                continue
+            seen.add(clean)
+            normalized.append(clean)
+        return normalized or self._default_subscription_urls()
+
+    @staticmethod
+    def _normalize_subscription_last_sync(raw: Any) -> Dict[str, Any]:
+        if not isinstance(raw, dict):
+            return {}
+        return {
+            "status": str(raw.get("status") or "").strip(),
+            "message": str(raw.get("message") or "").strip(),
+            "source": str(raw.get("source") or "").strip(),
+            "synced_at": str(raw.get("synced_at") or "").strip(),
+        }
+
+    @classmethod
+    def _normalize_subscription_url(cls, url: Any) -> str:
+        clean = str(url or "").strip()
+        if clean.startswith("https://github.com/") and "/blob/" in clean:
+            clean = clean.replace("https://github.com/", "https://raw.githubusercontent.com/").replace("/blob/", "/")
+        return clean
+
+    def _record_subscription_sync(self, status: str, message: str, source: Optional[str] = None):
+        self._subscription_last_sync = {
+            "status": str(status or "").strip(),
+            "message": str(message or "").strip(),
+            "source": str(source or "").strip(),
+            "synced_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        }
+
+    def _load_initial_state_from_subscription(self) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+        if not self._subscription_enabled:
+            self._record_subscription_sync(status="idle", message="订阅已关闭，首次安装使用空规则")
+            return self._default_common_types(), self._normalize_rules(self._default_rules_data())
+
+        payload, source, message = self._fetch_subscription_payload()
+        if payload is None:
+            self._record_subscription_sync(status="error", message=message or "订阅拉取失败")
+            logger.warning(f"综艺特别篇纠偏订阅初始化失败：{message}")
+            return self._default_common_types(), self._normalize_rules(self._default_rules_data())
+
+        common_types, rules = self._extract_subscription_state(payload)
+        self._record_subscription_sync(status="success", message=f"已从订阅初始化 {len(rules)} 条节目规则", source=source)
+        return common_types or self._default_common_types(), rules
+
+    def _fetch_subscription_payload(self) -> Tuple[Optional[Dict[str, Any]], str, str]:
+        errors: List[str] = []
+        for url in self._subscription_urls or self._default_subscription_urls():
+            try:
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                payload = response.json()
+                if not isinstance(payload, dict):
+                    raise ValueError("订阅内容必须是 JSON 对象")
+                return payload, url, "ok"
+            except Exception as err:
+                errors.append(f"{url}: {err}")
+
+        if self.BUNDLED_SUBSCRIPTION_FILE.exists():
+            try:
+                payload = json.loads(self.BUNDLED_SUBSCRIPTION_FILE.read_text(encoding="utf-8"))
+                if isinstance(payload, dict):
+                    return payload, str(self.BUNDLED_SUBSCRIPTION_FILE), "ok"
+            except Exception as err:
+                errors.append(f"{self.BUNDLED_SUBSCRIPTION_FILE}: {err}")
+
+        return None, "", "；".join(errors) if errors else "没有可用的订阅地址"
+
+    def _extract_subscription_state(self, payload: Dict[str, Any]) -> Tuple[Dict[str, Dict[str, Any]], List[Dict[str, Any]]]:
+        data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+        common_types_raw = data.get("common_types") if isinstance(data, dict) else None
+        if common_types_raw is None and isinstance(data, dict):
+            common_types_raw = self._load_json_data(data.get("common_types_data"), self._default_common_types())
+        rules_raw = data.get("rules") if isinstance(data, dict) else None
+        if rules_raw is None and isinstance(data, dict):
+            rules_raw = self._load_json_data(data.get("rules_data"), self._default_rules_data())
+        return (
+            self._normalize_common_types(common_types_raw or self._default_common_types()),
+            self._normalize_rules(rules_raw or self._default_rules_data()),
+        )
+
+    def _sync_subscription_into_state(self, replace: bool = False) -> Tuple[bool, str]:
+        if not self._subscription_enabled:
+            return False, "订阅已关闭，先打开“启用订阅规则”再同步"
+
+        payload, source, message = self._fetch_subscription_payload()
+        if payload is None:
+            self._record_subscription_sync(status="error", message=message or "订阅拉取失败")
+            return False, message or "订阅拉取失败"
+
+        remote_common_types, remote_rules = self._extract_subscription_state(payload)
+        if replace:
+            self._common_types = remote_common_types or self._default_common_types()
+            self._rules = remote_rules or []
+        else:
+            self._common_types = self._merge_common_types(remote_common_types, self._common_types or {})
+            self._rules = self._merge_rules(remote_rules, self._rules or [])
+
+        self._tmdb_mapping_cache = {}
+        self._record_subscription_sync(
+            status="success",
+            message=f"已同步 {len(remote_rules)} 条订阅节目规则（{'覆盖' if replace else '合并'}模式）",
+            source=source,
+        )
+        return True, self._subscription_last_sync.get("message") or "订阅同步成功"
+
+    def _merge_common_types(self, base_common_types: Dict[str, Any], overlay_common_types: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
+        merged = self._normalize_common_types(base_common_types or {})
+        overlay = self._normalize_common_types(overlay_common_types or {})
+        for type_key, type_conf in overlay.items():
+            current = merged.get(type_key) or {}
+            merged[type_key] = {
+                "label": str(type_conf.get("label") or current.get("label") or self._type_label(type_key)).strip() or self._type_label(type_key),
+                "source_keywords": self._dedupe_list((current.get("source_keywords") or []) + (type_conf.get("source_keywords") or [])),
+                "tmdb_keywords": self._dedupe_list((current.get("tmdb_keywords") or []) + (type_conf.get("tmdb_keywords") or [])),
+            }
+        return self._normalize_common_types(merged or self._default_common_types())
+
+    def _merge_rules(self, base_rules: List[Dict[str, Any]], overlay_rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        merged_order: List[str] = []
+        merged_map: Dict[str, Dict[str, Any]] = {}
+
+        for rule in self._normalize_rules(base_rules or []):
+            key = self._rule_identity(rule)
+            merged_order.append(key)
+            merged_map[key] = copy.deepcopy(rule)
+
+        for rule in self._normalize_rules(overlay_rules or []):
+            key = self._rule_identity(rule)
+            if key in merged_map:
+                merged_map[key] = self._merge_rule_entry(merged_map[key], rule)
+            else:
+                merged_order.append(key)
+                merged_map[key] = copy.deepcopy(rule)
+
+        return [self._normalize_rules([merged_map[key]])[0] for key in merged_order if key in merged_map]
+
+    def _merge_rule_entry(self, base_rule: Dict[str, Any], overlay_rule: Dict[str, Any]) -> Dict[str, Any]:
+        merged = copy.deepcopy(base_rule)
+        merged["name"] = str(overlay_rule.get("name") or merged.get("name") or "").strip()
+        merged["tmdbid"] = self._to_int(overlay_rule.get("tmdbid"), self._to_int(merged.get("tmdbid")))
+        merged["match_titles"] = self._dedupe_list((merged.get("match_titles") or []) + (overlay_rule.get("match_titles") or []))
+        merged["main_season"] = self._to_int(overlay_rule.get("main_season"), self._to_int(merged.get("main_season"), 1)) or 1
+        merged["specials_season"] = self._to_int(overlay_rule.get("specials_season"), self._to_int(merged.get("specials_season"), 0)) or 0
+        merged["specials_folder"] = str(
+            overlay_rule.get("specials_folder") or merged.get("specials_folder") or self._specials_folder or "Specials"
+        ).strip() or "Specials"
+
+        season_map = {
+            int(item.get("source_season") or 0): copy.deepcopy(item)
+            for item in (merged.get("seasons") or [])
+            if int(item.get("source_season") or 0)
+        }
+        for season_rule in overlay_rule.get("seasons") or []:
+            source_season = self._to_int(season_rule.get("source_season"))
+            if not source_season:
+                continue
+            if source_season not in season_map:
+                season_map[source_season] = copy.deepcopy(season_rule)
+                continue
+            current = season_map[source_season]
+            current["tmdb_season_number"] = self._to_int(
+                season_rule.get("tmdb_season_number"),
+                self._to_int(current.get("tmdb_season_number"), source_season),
+            ) or source_season
+            current["tmdb_season_matchers"] = self._dedupe_list(
+                (current.get("tmdb_season_matchers") or []) + (season_rule.get("tmdb_season_matchers") or [])
+            )
+
+            current_types = self._normalize_types_map(current.get("types") or {})
+            overlay_types = self._normalize_types_map(season_rule.get("types") or {})
+            for type_key, type_conf in overlay_types.items():
+                existed = current_types.get(type_key) or {}
+                current_types[type_key] = {
+                    "source_keywords": self._dedupe_list((existed.get("source_keywords") or []) + (type_conf.get("source_keywords") or [])),
+                    "tmdb_keywords": self._dedupe_list((existed.get("tmdb_keywords") or []) + (type_conf.get("tmdb_keywords") or [])),
+                }
+            current["types"] = current_types
+            current["manual_matches"] = self._dedupe_manual_matches(
+                (current.get("manual_matches") or []) + (season_rule.get("manual_matches") or [])
+            )
+            season_map[source_season] = current
+
+        merged["seasons"] = sorted(season_map.values(), key=lambda item: int(item.get("source_season") or 0))
+        return merged
+
+    @staticmethod
+    def _rule_identity(rule: Dict[str, Any]) -> str:
+        tmdbid = VarietySpecialMapper._to_int(rule.get("tmdbid"))
+        if tmdbid:
+            return f"tmdb:{tmdbid}"
+        return f"name:{str(rule.get('name') or '').strip().lower()}"
+
+    def _dedupe_manual_matches(self, manual_matches: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        normalized = self._normalize_manual_matches(manual_matches or [])
+        seen = set()
+        result: List[Dict[str, Any]] = []
+        for item in normalized:
+            marker = (
+                str(item.get("type") or "").strip(),
+                tuple(item.get("source_keywords") or []),
+                self._to_int(item.get("index")),
+                self._to_int(item.get("target_episode")),
+            )
+            if marker in seen:
+                continue
+            seen.add(marker)
+            result.append(item)
+        return result
 
     @staticmethod
     async def _read_request_json(request: Request) -> Dict[str, Any]:
@@ -1007,10 +1257,10 @@ class VarietySpecialMapper(_PluginBase):
 
             if rule["name"] == "喜人奇妙夜":
                 self._patch_amazing_night_rule(rule)
+            if rule["name"] == "妻子的浪漫旅行" or int(rule.get("tmdbid") or 0) == 97199:
+                self._patch_viva_la_romance_rule(rule)
 
             normalized_rules.append(rule)
-
-        normalized_rules = self._ensure_builtin_rules(normalized_rules)
 
         return normalized_rules
 
@@ -1035,17 +1285,6 @@ class VarietySpecialMapper(_PluginBase):
         rule.setdefault("seasons", []).append(season_rule)
         rule["seasons"] = sorted(rule.get("seasons") or [], key=lambda item: int(item.get("source_season") or 0))
         return season_rule
-
-    def _ensure_builtin_rules(self, rules: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        has_viva = False
-        for rule in rules:
-            if rule.get("name") == "妻子的浪漫旅行" or int(rule.get("tmdbid") or 0) == 97199:
-                self._patch_viva_la_romance_rule(rule)
-                has_viva = True
-                break
-        if not has_viva:
-            rules.append(self._normalize_rules([self._default_viva_la_romance_rule()])[0])
-        return rules
 
     def _patch_viva_la_romance_rule(self, rule: Dict[str, Any]):
         season_nine = self._get_or_create_season_rule(rule, 9)

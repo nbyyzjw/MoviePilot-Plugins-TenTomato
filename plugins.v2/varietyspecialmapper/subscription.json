@@ -1,0 +1,106 @@
+{
+  "plugin": "VarietySpecialMapper",
+  "schema_version": 1,
+  "updated_at": "2026-05-02",
+  "description": "综艺特别篇纠偏默认订阅规则。供首次安装初始化和手动同步补全使用。",
+  "common_types": {
+    "pilot": {
+      "label": "先导",
+      "source_keywords": ["先导"],
+      "tmdb_keywords": ["先导"]
+    },
+    "bonus": {
+      "label": "彩蛋",
+      "source_keywords": ["彩蛋"],
+      "tmdb_keywords": ["彩蛋"]
+    },
+    "program": {
+      "label": "企划",
+      "source_keywords": ["企划"],
+      "tmdb_keywords": ["企划"]
+    },
+    "plus": {
+      "label": "加更",
+      "source_keywords": ["加更"],
+      "tmdb_keywords": ["加更"]
+    }
+  },
+  "rules": [
+    {
+      "name": "喜人奇妙夜",
+      "tmdbid": 257161,
+      "match_titles": ["喜人奇妙夜", "Amazing Night", "Amazing.Night"],
+      "main_season": 1,
+      "specials_season": 0,
+      "specials_folder": "Specials",
+      "seasons": [
+        {
+          "source_season": 1,
+          "tmdb_season_number": 1,
+          "tmdb_season_matchers": [],
+          "types": {
+            "pilot": {
+              "source_keywords": ["先导", "S01E00"],
+              "tmdb_keywords": ["先导", "超前集结"]
+            },
+            "pure": {
+              "source_keywords": ["纯享", ".Pure."],
+              "tmdb_keywords": ["纯享"]
+            },
+            "watch": {
+              "source_keywords": ["陪看", ".Watch."],
+              "tmdb_keywords": ["陪看"]
+            },
+            "chat": {
+              "source_keywords": ["夜聊", ".Chat."],
+              "tmdb_keywords": ["夜聊"]
+            },
+            "punish": {
+              "source_keywords": ["惩罚室", ".Punish."],
+              "tmdb_keywords": ["惩罚室", "不好笑惩罚室"]
+            },
+            "party": {
+              "source_keywords": ["聚会", "派对", ".Party."],
+              "tmdb_keywords": ["聚会", "派对"]
+            },
+            "bonus": {
+              "source_keywords": ["彩蛋", ".Bonus."],
+              "tmdb_keywords": ["特辑"]
+            }
+          },
+          "manual_matches": []
+        }
+      ]
+    },
+    {
+      "name": "妻子的浪漫旅行",
+      "tmdbid": 97199,
+      "match_titles": ["妻子的浪漫旅行", "Viva La Romance", "Viva.La.Romance"],
+      "main_season": 9,
+      "specials_season": 0,
+      "specials_folder": "Specials",
+      "seasons": [
+        {
+          "source_season": 9,
+          "tmdb_season_number": 8,
+          "tmdb_season_matchers": ["2026"],
+          "types": {
+            "program": {
+              "source_keywords": ["特别企划", "企划", ".Program.", "Program"],
+              "tmdb_keywords": ["特别企划", "企划"]
+            },
+            "bonus": {
+              "source_keywords": ["超前彩蛋", ".Egg.", "Egg"],
+              "tmdb_keywords": ["超前彩蛋"]
+            },
+            "plus": {
+              "source_keywords": ["加更", ".Plus.", "Plus"],
+              "tmdb_keywords": ["加更版", "Plus"]
+            }
+          },
+          "manual_matches": []
+        }
+      ]
+    }
+  ]
+}

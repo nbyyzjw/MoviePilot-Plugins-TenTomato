@@ -1,2 +1,4 @@
 __pycache__/
 *.pyc
+plugins.v2/*/node_modules/
+plugins.v2/*/.vite/

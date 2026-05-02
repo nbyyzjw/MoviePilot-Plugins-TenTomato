@@ -22,6 +22,9 @@ const createEmptyState = () => ({
   enabled: false,
   notify: false,
   specials_folder: 'Specials',
+  subscription_enabled: true,
+  subscription_urls: [],
+  subscription_last_sync: {},
   commonTypes: [],
   rules: [],
   history: [],
@@ -70,6 +73,7 @@ const _sfc_main = defineComponent({
     const state = ref(createEmptyState());
     const loading = ref(false);
     const saving = ref(false);
+    const syncingSubscription = ref(false);
     const saveError = ref('');
     const saveStatus = ref('idle');
     const dirty = ref(false);
@@ -140,6 +144,11 @@ const _sfc_main = defineComponent({
         enabled: !!raw?.enabled,
         notify: !!raw?.notify,
         specials_folder: String(raw?.specials_folder || 'Specials'),
+        subscription_enabled: raw?.subscription_enabled !== false,
+        subscription_urls: normalizeStringArray(raw?.subscription_urls || []),
+        subscription_last_sync: raw?.subscription_last_sync && typeof raw.subscription_last_sync === 'object'
+          ? raw.subscription_last_sync
+          : {},
         commonTypes,
         rules,
         history: Array.isArray(raw?.history) ? raw.history : [],
@@ -148,6 +157,7 @@ const _sfc_main = defineComponent({
 
     const statusText = computed(() => {
       if (loading.value) return '正在加载'
+      if (syncingSubscription.value) return '正在同步订阅'
       if (saving.value) return '正在保存'
       if (saveStatus.value === 'invalid') return '待补全后保存'
       if (dirty.value) return '有未保存更改'
@@ -158,6 +168,7 @@ const _sfc_main = defineComponent({
 
     const statusColor = computed(() => {
       if (loading.value) return 'info'
+      if (syncingSubscription.value) return 'primary'
       if (saving.value) return 'primary'
       if (saveStatus.value === 'invalid') return 'warning'
       if (saveStatus.value === 'error') return 'error'
@@ -167,6 +178,13 @@ const _sfc_main = defineComponent({
     });
 
     const lastSavedLabel = computed(() => (lastSavedAt.value ? `上次保存：${lastSavedAt.value}` : ''));
+    const subscriptionStatusLabel = computed(() => {
+      const info = state.value.subscription_last_sync || {};
+      if (!info?.message && !info?.synced_at) return ''
+      const source = info?.source ? ` · ${info.source}` : '';
+      const time = info?.synced_at ? ` · ${info.synced_at}` : '';
+      return `${info.message || '订阅状态未知'}${source}${time}`
+    });
 
     const orderedSeasons = (rule) => {
       return [...(rule?.seasons || [])].sort((a, b) => Number(a.source_season || 0) - Number(b.source_season || 0))
@@ -273,6 +291,8 @@ const _sfc_main = defineComponent({
         enabled: !!state.value.enabled,
         notify: !!state.value.notify,
         specials_folder: String(state.value.specials_folder || 'Specials').trim() || 'Specials',
+        subscription_enabled: !!state.value.subscription_enabled,
+        subscription_urls: normalizeStringArray(state.value.subscription_urls),
         common_types,
         rules,
       }
@@ -362,6 +382,33 @@ const _sfc_main = defineComponent({
         return false
       } finally {
         saving.value = false;
+      }
+    };
+
+    const syncSubscription = async () => {
+      if (!props.api?.post) return false
+      const saved = await saveNow({ silent: false });
+      if (!saved) return false
+      syncingSubscription.value = true;
+      saveError.value = '';
+      try {
+        const result = await props.api.post(`plugin/${PLUGIN_ID}/pull_subscription`, { mode: 'merge' });
+        if (!result || result.code !== 0) {
+          throw new Error(result?.message || '同步订阅失败')
+        }
+        updateStateSilently(() => {
+          state.value = hydrateState(result.data || {});
+        });
+        dirty.value = false;
+        saveStatus.value = 'saved';
+        lastSavedAt.value = new Date().toLocaleString('zh-CN', { hour12: false });
+        return true
+      } catch (error) {
+        saveStatus.value = 'error';
+        saveError.value = error?.message || '同步订阅失败';
+        return false
+      } finally {
+        syncingSubscription.value = false;
       }
     };
 
@@ -542,13 +589,16 @@ const _sfc_main = defineComponent({
       drafts,
       loading,
       saving,
+      syncingSubscription,
       saveError,
       statusText,
       statusColor,
       lastSavedLabel,
+      subscriptionStatusLabel,
       validationIssues,
       loadState,
       saveNow,
+      syncSubscription,
       openTypeDialog,
       confirmAddType,
       removeCommonType,
@@ -576,14 +626,19 @@ const _hoisted_4 = {
   key: 0,
   class: "text-caption text-medium-emphasis"
 };
-const _hoisted_5 = { class: "d-flex align-center flex-wrap w-100 gap-2 pr-2" };
-const _hoisted_6 = { class: "d-flex justify-end mb-2" };
+const _hoisted_5 = { class: "d-flex flex-wrap align-center gap-2" };
+const _hoisted_6 = {
+  key: 0,
+  class: "text-caption text-medium-emphasis"
+};
 const _hoisted_7 = { class: "d-flex align-center flex-wrap w-100 gap-2 pr-2" };
 const _hoisted_8 = { class: "d-flex justify-end mb-2" };
-const _hoisted_9 = { class: "d-flex justify-space-between align-center mb-2 flex-wrap gap-2" };
-const _hoisted_10 = { class: "d-flex align-center flex-wrap w-100 gap-2 pr-2" };
-const _hoisted_11 = { class: "d-flex justify-end mb-2" };
-const _hoisted_12 = {
+const _hoisted_9 = { class: "d-flex align-center flex-wrap w-100 gap-2 pr-2" };
+const _hoisted_10 = { class: "d-flex justify-end mb-2" };
+const _hoisted_11 = { class: "d-flex justify-space-between align-center mb-2 flex-wrap gap-2" };
+const _hoisted_12 = { class: "d-flex align-center flex-wrap w-100 gap-2 pr-2" };
+const _hoisted_13 = { class: "d-flex justify-end mb-2" };
+const _hoisted_14 = {
   key: 1,
   class: "text-medium-emphasis"
 };
@@ -601,8 +656,8 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
   const _component_v_row = _resolveComponent("v-row");
   const _component_v_card_text = _resolveComponent("v-card-text");
   const _component_v_card = _resolveComponent("v-card");
-  const _component_v_expansion_panel_title = _resolveComponent("v-expansion-panel-title");
   const _component_v_combobox = _resolveComponent("v-combobox");
+  const _component_v_expansion_panel_title = _resolveComponent("v-expansion-panel-title");
   const _component_v_expansion_panel_text = _resolveComponent("v-expansion-panel-text");
   const _component_v_expansion_panel = _resolveComponent("v-expansion-panel");
   const _component_v_expansion_panels = _resolveComponent("v-expansion-panels");
@@ -628,7 +683,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
               color: "primary",
               size: "small"
             }),
-            _cache[23] || (_cache[23] = _createElementVNode("span", null, "综艺特别篇纠偏规则", -1)),
+            _cache[25] || (_cache[25] = _createElementVNode("span", null, "综艺特别篇纠偏规则", -1)),
             _createVNode(_component_v_spacer),
             _createVNode(_component_v_chip, {
               size: "small",
@@ -653,7 +708,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                   size: "small",
                   class: "mr-1"
                 }),
-                _cache[22] || (_cache[22] = _createTextVNode(" 记录 ", -1))
+                _cache[24] || (_cache[24] = _createTextVNode(" 记录 ", -1))
               ]),
               _: 1
             })
@@ -699,7 +754,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
               variant: "tonal",
               class: "mb-3"
             }, {
-              default: _withCtx(() => [...(_cache[24] || (_cache[24] = [
+              default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
                 _createTextVNode(" 现在默认是", -1),
                 _createElementVNode("strong", null, "自动保存", -1),
                 _createTextVNode("：改关键词、加规则、删季规则都先在本页完成，我会在你停手后自动落库。只有内容不完整或 JSON 不合法时才暂缓保存，不会再频繁打断。 ", -1)
@@ -713,7 +768,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                 loading: _ctx.saving,
                 onClick: _ctx.saveNow
               }, {
-                default: _withCtx(() => [...(_cache[25] || (_cache[25] = [
+                default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
                   _createTextVNode("立即保存", -1)
                 ]))]),
                 _: 1
@@ -724,7 +779,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                 disabled: _ctx.loading || _ctx.saving,
                 onClick: _ctx.loadState
               }, {
-                default: _withCtx(() => [...(_cache[26] || (_cache[26] = [
+                default: _withCtx(() => [...(_cache[28] || (_cache[28] = [
                   _createTextVNode("从服务器刷新", -1)
                 ]))]),
                 _: 1
@@ -739,7 +794,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_card_title, { class: "text-body-2 px-3 py-2" }, {
-                  default: _withCtx(() => [...(_cache[27] || (_cache[27] = [
+                  default: _withCtx(() => [...(_cache[29] || (_cache[29] = [
                     _createTextVNode("基础设置", -1)
                   ]))]),
                   _: 1
@@ -808,9 +863,97 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
               class: "border rounded mb-4"
             }, {
               default: _withCtx(() => [
+                _createVNode(_component_v_card_title, { class: "text-body-2 px-3 py-2" }, {
+                  default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
+                    _createTextVNode("配置订阅", -1)
+                  ]))]),
+                  _: 1
+                }),
+                _createVNode(_component_v_card_text, { class: "px-3 py-2" }, {
+                  default: _withCtx(() => [
+                    _createVNode(_component_v_alert, {
+                      type: "info",
+                      density: "compact",
+                      variant: "tonal",
+                      class: "mb-3"
+                    }, {
+                      default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
+                        _createTextVNode(" 默认会订阅这个 GitHub 仓库里的规则 JSON。首次安装会拿它做初始化，后面你也可以手动“同步订阅”，把远端默认规则安全补到本地，不会直接覆盖你已经手改过的内容。 ", -1)
+                      ]))]),
+                      _: 1
+                    }),
+                    _createVNode(_component_v_row, { class: "align-center" }, {
+                      default: _withCtx(() => [
+                        _createVNode(_component_v_col, {
+                          cols: "12",
+                          md: "4"
+                        }, {
+                          default: _withCtx(() => [
+                            _createVNode(_component_v_switch, {
+                              modelValue: _ctx.state.subscription_enabled,
+                              "onUpdate:modelValue": _cache[4] || (_cache[4] = $event => ((_ctx.state.subscription_enabled) = $event)),
+                              label: "启用订阅规则",
+                              inset: "",
+                              "hide-details": ""
+                            }, null, 8, ["modelValue"])
+                          ]),
+                          _: 1
+                        }),
+                        _createVNode(_component_v_col, {
+                          cols: "12",
+                          md: "8"
+                        }, {
+                          default: _withCtx(() => [
+                            _createElementVNode("div", _hoisted_5, [
+                              _createVNode(_component_v_btn, {
+                                size: "small",
+                                color: "primary",
+                                variant: "tonal",
+                                loading: _ctx.syncingSubscription,
+                                disabled: _ctx.loading || _ctx.saving,
+                                onClick: _ctx.syncSubscription
+                              }, {
+                                default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
+                                  _createTextVNode(" 立即同步订阅 ", -1)
+                                ]))]),
+                                _: 1
+                              }, 8, ["loading", "disabled", "onClick"]),
+                              (_ctx.subscriptionStatusLabel)
+                                ? (_openBlock(), _createElementBlock("span", _hoisted_6, _toDisplayString(_ctx.subscriptionStatusLabel), 1))
+                                : _createCommentVNode("", true)
+                            ])
+                          ]),
+                          _: 1
+                        })
+                      ]),
+                      _: 1
+                    }),
+                    _createVNode(_component_v_combobox, {
+                      modelValue: _ctx.state.subscription_urls,
+                      "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((_ctx.state.subscription_urls) = $event)),
+                      label: "订阅地址",
+                      placeholder: "输入 JSON 地址后回车，可配多个，按顺序尝试",
+                      multiple: "",
+                      chips: "",
+                      "closable-chips": "",
+                      clearable: "",
+                      "hide-selected": "",
+                      class: "mt-3"
+                    }, null, 8, ["modelValue"])
+                  ]),
+                  _: 1
+                })
+              ]),
+              _: 1
+            }),
+            _createVNode(_component_v_card, {
+              variant: "text",
+              class: "border rounded mb-4"
+            }, {
+              default: _withCtx(() => [
                 _createVNode(_component_v_card_title, { class: "text-body-2 d-flex align-center px-3 py-2" }, {
                   default: _withCtx(() => [
-                    _cache[29] || (_cache[29] = _createElementVNode("span", null, "通用关键词库", -1)),
+                    _cache[34] || (_cache[34] = _createElementVNode("span", null, "通用关键词库", -1)),
                     _createVNode(_component_v_spacer),
                     _createVNode(_component_v_btn, {
                       size: "small",
@@ -824,7 +967,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                           size: "small",
                           class: "mr-1"
                         }),
-                        _cache[28] || (_cache[28] = _createTextVNode(" 新增分类 ", -1))
+                        _cache[33] || (_cache[33] = _createTextVNode(" 新增分类 ", -1))
                       ]),
                       _: 1
                     }, 8, ["onClick"])
@@ -839,7 +982,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       variant: "tonal",
                       class: "mb-3"
                     }, {
-                      default: _withCtx(() => [...(_cache[30] || (_cache[30] = [
+                      default: _withCtx(() => [...(_cache[35] || (_cache[35] = [
                         _createTextVNode(" 这里负责维护“先导 / 彩蛋 / 企划 / 加更 / 纯享”这一层。删除分类会同步从各节目规则里移除对应类型，不再需要先勾删除再统一保存。 ", -1)
                       ]))]),
                       _: 1
@@ -858,7 +1001,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                 default: _withCtx(() => [
                                   _createVNode(_component_v_expansion_panel_title, null, {
                                     default: _withCtx(() => [
-                                      _createElementVNode("div", _hoisted_5, [
+                                      _createElementVNode("div", _hoisted_7, [
                                         _createElementVNode("span", null, _toDisplayString(type.label || '未命名分类'), 1),
                                         _createVNode(_component_v_chip, {
                                           size: "x-small",
@@ -885,14 +1028,14 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                   }, 1024),
                                   _createVNode(_component_v_expansion_panel_text, null, {
                                     default: _withCtx(() => [
-                                      _createElementVNode("div", _hoisted_6, [
+                                      _createElementVNode("div", _hoisted_8, [
                                         _createVNode(_component_v_btn, {
                                           size: "small",
                                           color: "error",
                                           variant: "text",
                                           onClick: $event => (_ctx.removeCommonType(type._uid))
                                         }, {
-                                          default: _withCtx(() => [...(_cache[31] || (_cache[31] = [
+                                          default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
                                             _createTextVNode(" 删除分类 ", -1)
                                           ]))]),
                                           _: 1
@@ -918,7 +1061,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                             cols: "12",
                                             md: "7"
                                           }, {
-                                            default: _withCtx(() => [...(_cache[32] || (_cache[32] = [
+                                            default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
                                               _createElementVNode("div", { class: "text-caption text-medium-emphasis pt-3" }, " 分类 key 会保持稳定，改的是展示名称；这样已有节目规则不会乱掉。 ", -1)
                                             ]))]),
                                             _: 1
@@ -986,7 +1129,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_card_text, { class: "text-medium-emphasis" }, {
-                              default: _withCtx(() => [...(_cache[33] || (_cache[33] = [
+                              default: _withCtx(() => [...(_cache[38] || (_cache[38] = [
                                 _createTextVNode("还没有通用分类，先加一个“先导 / 彩蛋 / 纯享”之类的基础类别吧。", -1)
                               ]))]),
                               _: 1
@@ -1007,7 +1150,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
               default: _withCtx(() => [
                 _createVNode(_component_v_card_title, { class: "text-body-2 d-flex align-center px-3 py-2" }, {
                   default: _withCtx(() => [
-                    _cache[35] || (_cache[35] = _createElementVNode("span", null, "节目规则", -1)),
+                    _cache[40] || (_cache[40] = _createElementVNode("span", null, "节目规则", -1)),
                     _createVNode(_component_v_spacer),
                     _createVNode(_component_v_btn, {
                       size: "small",
@@ -1021,7 +1164,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                           size: "small",
                           class: "mr-1"
                         }),
-                        _cache[34] || (_cache[34] = _createTextVNode(" 新增节目 ", -1))
+                        _cache[39] || (_cache[39] = _createTextVNode(" 新增节目 ", -1))
                       ]),
                       _: 1
                     }, 8, ["onClick"])
@@ -1036,7 +1179,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       variant: "tonal",
                       class: "mb-3"
                     }, {
-                      default: _withCtx(() => [...(_cache[36] || (_cache[36] = [
+                      default: _withCtx(() => [...(_cache[41] || (_cache[41] = [
                         _createTextVNode(" 节目、季规则、关键词现在都可以连续改。新增节目会先建一个默认首季，后续再慢慢补关键词也行。 ", -1)
                       ]))]),
                       _: 1
@@ -1055,7 +1198,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                 default: _withCtx(() => [
                                   _createVNode(_component_v_expansion_panel_title, null, {
                                     default: _withCtx(() => [
-                                      _createElementVNode("div", _hoisted_7, [
+                                      _createElementVNode("div", _hoisted_9, [
                                         _createElementVNode("span", null, _toDisplayString(rule.name || '未命名节目'), 1),
                                         _createVNode(_component_v_chip, {
                                           size: "x-small",
@@ -1082,14 +1225,14 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                   }, 1024),
                                   _createVNode(_component_v_expansion_panel_text, null, {
                                     default: _withCtx(() => [
-                                      _createElementVNode("div", _hoisted_8, [
+                                      _createElementVNode("div", _hoisted_10, [
                                         _createVNode(_component_v_btn, {
                                           size: "small",
                                           color: "error",
                                           variant: "text",
                                           onClick: $event => (_ctx.removeRule(rule._uid))
                                         }, {
-                                          default: _withCtx(() => [...(_cache[37] || (_cache[37] = [
+                                          default: _withCtx(() => [...(_cache[42] || (_cache[42] = [
                                             _createTextVNode("删除节目", -1)
                                           ]))]),
                                           _: 1
@@ -1179,7 +1322,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                             cols: "12",
                                             md: "4"
                                           }, {
-                                            default: _withCtx(() => [...(_cache[38] || (_cache[38] = [
+                                            default: _withCtx(() => [...(_cache[43] || (_cache[43] = [
                                               _createElementVNode("div", { class: "text-caption text-medium-emphasis pt-3" }, " 支持源文件季号和 TMDB 实际季号错位，不用为了保存顺序来回切页面。 ", -1)
                                             ]))]),
                                             _: 1
@@ -1199,8 +1342,8 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                         "hide-selected": "",
                                         class: "mb-3"
                                       }, null, 8, ["modelValue", "onUpdate:modelValue"]),
-                                      _createElementVNode("div", _hoisted_9, [
-                                        _cache[40] || (_cache[40] = _createElementVNode("div", { class: "text-body-2 font-weight-medium" }, "季规则", -1)),
+                                      _createElementVNode("div", _hoisted_11, [
+                                        _cache[45] || (_cache[45] = _createElementVNode("div", { class: "text-body-2 font-weight-medium" }, "季规则", -1)),
                                         _createVNode(_component_v_btn, {
                                           size: "small",
                                           color: "primary",
@@ -1213,7 +1356,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                               size: "small",
                                               class: "mr-1"
                                             }),
-                                            _cache[39] || (_cache[39] = _createTextVNode(" 新增季规则 ", -1))
+                                            _cache[44] || (_cache[44] = _createTextVNode(" 新增季规则 ", -1))
                                           ]),
                                           _: 1
                                         }, 8, ["onClick"])
@@ -1232,7 +1375,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                                   default: _withCtx(() => [
                                                     _createVNode(_component_v_expansion_panel_title, null, {
                                                       default: _withCtx(() => [
-                                                        _createElementVNode("div", _hoisted_10, [
+                                                        _createElementVNode("div", _hoisted_12, [
                                                           _createElementVNode("span", null, "来源第 " + _toDisplayString(season.source_season || '?') + " 季", 1),
                                                           _createVNode(_component_v_chip, {
                                                             size: "x-small",
@@ -1259,14 +1402,14 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                                     }, 1024),
                                                     _createVNode(_component_v_expansion_panel_text, null, {
                                                       default: _withCtx(() => [
-                                                        _createElementVNode("div", _hoisted_11, [
+                                                        _createElementVNode("div", _hoisted_13, [
                                                           _createVNode(_component_v_btn, {
                                                             size: "small",
                                                             color: "error",
                                                             variant: "text",
                                                             onClick: $event => (_ctx.removeSeason(rule._uid, season._uid))
                                                           }, {
-                                                            default: _withCtx(() => [...(_cache[41] || (_cache[41] = [
+                                                            default: _withCtx(() => [...(_cache[46] || (_cache[46] = [
                                                               _createTextVNode("删除这一季", -1)
                                                             ]))]),
                                                             _: 1
@@ -1308,7 +1451,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                                               cols: "12",
                                                               md: "4"
                                                             }, {
-                                                              default: _withCtx(() => [...(_cache[42] || (_cache[42] = [
+                                                              default: _withCtx(() => [...(_cache[47] || (_cache[47] = [
                                                                 _createElementVNode("div", { class: "text-caption text-medium-emphasis pt-3" }, " 如果源文件写第 9 季、TMDB 实际是第 8 季，就在这里分开填。 ", -1)
                                                               ]))]),
                                                               _: 1
@@ -1400,7 +1543,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                                             _createVNode(_component_v_expansion_panel, null, {
                                                               default: _withCtx(() => [
                                                                 _createVNode(_component_v_expansion_panel_title, null, {
-                                                                  default: _withCtx(() => [...(_cache[43] || (_cache[43] = [
+                                                                  default: _withCtx(() => [...(_cache[48] || (_cache[48] = [
                                                                     _createTextVNode("高级手工匹配（可选）", -1)
                                                                   ]))]),
                                                                   _: 1
@@ -1413,7 +1556,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                                                       variant: "tonal",
                                                                       class: "mb-3"
                                                                     }, {
-                                                                      default: _withCtx(() => [...(_cache[44] || (_cache[44] = [
+                                                                      default: _withCtx(() => [...(_cache[49] || (_cache[49] = [
                                                                         _createTextVNode(" 只在非常特殊的命名下再用 JSON。保存前会自动校验格式，不合法时只会暂缓保存，不会把现有规则冲掉。 ", -1)
                                                                       ]))]),
                                                                       _: 1
@@ -1452,7 +1595,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                                           }, {
                                             default: _withCtx(() => [
                                               _createVNode(_component_v_card_text, { class: "text-medium-emphasis" }, {
-                                                default: _withCtx(() => [...(_cache[45] || (_cache[45] = [
+                                                default: _withCtx(() => [...(_cache[50] || (_cache[50] = [
                                                   _createTextVNode("这档节目还没有季规则，先补一个。", -1)
                                                 ]))]),
                                                 _: 1
@@ -1477,7 +1620,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                         }, {
                           default: _withCtx(() => [
                             _createVNode(_component_v_card_text, { class: "text-medium-emphasis" }, {
-                              default: _withCtx(() => [...(_cache[46] || (_cache[46] = [
+                              default: _withCtx(() => [...(_cache[51] || (_cache[51] = [
                                 _createTextVNode("还没有节目规则，先新增一档节目吧。", -1)
                               ]))]),
                               _: 1
@@ -1497,7 +1640,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
             }, {
               default: _withCtx(() => [
                 _createVNode(_component_v_card_title, { class: "text-body-2 px-3 py-2" }, {
-                  default: _withCtx(() => [...(_cache[47] || (_cache[47] = [
+                  default: _withCtx(() => [...(_cache[52] || (_cache[52] = [
                     _createTextVNode("最近纠偏记录", -1)
                   ]))]),
                   _: 1
@@ -1541,7 +1684,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                           ]),
                           _: 1
                         }))
-                      : (_openBlock(), _createElementBlock("div", _hoisted_12, "还没有纠偏记录。"))
+                      : (_openBlock(), _createElementBlock("div", _hoisted_14, "还没有纠偏记录。"))
                   ]),
                   _: 1
                 })
@@ -1556,14 +1699,14 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
     }),
     _createVNode(_component_v_dialog, {
       modelValue: _ctx.dialogs.type,
-      "onUpdate:modelValue": _cache[8] || (_cache[8] = $event => ((_ctx.dialogs.type) = $event)),
+      "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((_ctx.dialogs.type) = $event)),
       "max-width": "720"
     }, {
       default: _withCtx(() => [
         _createVNode(_component_v_card, null, {
           default: _withCtx(() => [
             _createVNode(_component_v_card_title, null, {
-              default: _withCtx(() => [...(_cache[48] || (_cache[48] = [
+              default: _withCtx(() => [...(_cache[53] || (_cache[53] = [
                 _createTextVNode("新增关键词分类", -1)
               ]))]),
               _: 1
@@ -1572,7 +1715,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
               default: _withCtx(() => [
                 _createVNode(_component_v_text_field, {
                   modelValue: _ctx.drafts.type.label,
-                  "onUpdate:modelValue": _cache[4] || (_cache[4] = $event => ((_ctx.drafts.type.label) = $event)),
+                  "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((_ctx.drafts.type.label) = $event)),
                   label: "分类名称",
                   placeholder: "例如：纯享 / 夜聊 / 聚会",
                   class: "mb-3"
@@ -1586,7 +1729,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_combobox, {
                           modelValue: _ctx.drafts.type.source_keywords,
-                          "onUpdate:modelValue": _cache[5] || (_cache[5] = $event => ((_ctx.drafts.type.source_keywords) = $event)),
+                          "onUpdate:modelValue": _cache[7] || (_cache[7] = $event => ((_ctx.drafts.type.source_keywords) = $event)),
                           label: "源文件名关键词",
                           placeholder: "输入后回车",
                           multiple: "",
@@ -1605,7 +1748,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_combobox, {
                           modelValue: _ctx.drafts.type.tmdb_keywords,
-                          "onUpdate:modelValue": _cache[6] || (_cache[6] = $event => ((_ctx.drafts.type.tmdb_keywords) = $event)),
+                          "onUpdate:modelValue": _cache[8] || (_cache[8] = $event => ((_ctx.drafts.type.tmdb_keywords) = $event)),
                           label: "TMDB 标题关键词",
                           placeholder: "输入后回车",
                           multiple: "",
@@ -1628,9 +1771,9 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                 _createVNode(_component_v_spacer),
                 _createVNode(_component_v_btn, {
                   variant: "text",
-                  onClick: _cache[7] || (_cache[7] = $event => (_ctx.dialogs.type = false))
+                  onClick: _cache[9] || (_cache[9] = $event => (_ctx.dialogs.type = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[49] || (_cache[49] = [
+                  default: _withCtx(() => [...(_cache[54] || (_cache[54] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -1639,7 +1782,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                   color: "primary",
                   onClick: _ctx.confirmAddType
                 }, {
-                  default: _withCtx(() => [...(_cache[50] || (_cache[50] = [
+                  default: _withCtx(() => [...(_cache[55] || (_cache[55] = [
                     _createTextVNode("添加", -1)
                   ]))]),
                   _: 1
@@ -1655,14 +1798,14 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
     }, 8, ["modelValue"]),
     _createVNode(_component_v_dialog, {
       modelValue: _ctx.dialogs.rule,
-      "onUpdate:modelValue": _cache[16] || (_cache[16] = $event => ((_ctx.dialogs.rule) = $event)),
+      "onUpdate:modelValue": _cache[18] || (_cache[18] = $event => ((_ctx.dialogs.rule) = $event)),
       "max-width": "820"
     }, {
       default: _withCtx(() => [
         _createVNode(_component_v_card, null, {
           default: _withCtx(() => [
             _createVNode(_component_v_card_title, null, {
-              default: _withCtx(() => [...(_cache[51] || (_cache[51] = [
+              default: _withCtx(() => [...(_cache[56] || (_cache[56] = [
                 _createTextVNode("新增节目规则", -1)
               ]))]),
               _: 1
@@ -1678,7 +1821,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: _ctx.drafts.rule.name,
-                          "onUpdate:modelValue": _cache[9] || (_cache[9] = $event => ((_ctx.drafts.rule.name) = $event)),
+                          "onUpdate:modelValue": _cache[11] || (_cache[11] = $event => ((_ctx.drafts.rule.name) = $event)),
                           label: "节目名称"
                         }, null, 8, ["modelValue"])
                       ]),
@@ -1691,7 +1834,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: _ctx.drafts.rule.tmdbid,
-                          "onUpdate:modelValue": _cache[10] || (_cache[10] = $event => ((_ctx.drafts.rule.tmdbid) = $event)),
+                          "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((_ctx.drafts.rule.tmdbid) = $event)),
                           label: "TMDB ID",
                           type: "number"
                         }, null, 8, ["modelValue"])
@@ -1710,7 +1853,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: _ctx.drafts.rule.main_season,
-                          "onUpdate:modelValue": _cache[11] || (_cache[11] = $event => ((_ctx.drafts.rule.main_season) = $event)),
+                          "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((_ctx.drafts.rule.main_season) = $event)),
                           label: "默认主季",
                           type: "number"
                         }, null, 8, ["modelValue"])
@@ -1724,7 +1867,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: _ctx.drafts.rule.specials_season,
-                          "onUpdate:modelValue": _cache[12] || (_cache[12] = $event => ((_ctx.drafts.rule.specials_season) = $event)),
+                          "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((_ctx.drafts.rule.specials_season) = $event)),
                           label: "TMDB 特别篇季号",
                           type: "number"
                         }, null, 8, ["modelValue"])
@@ -1738,7 +1881,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: _ctx.drafts.rule.specials_folder,
-                          "onUpdate:modelValue": _cache[13] || (_cache[13] = $event => ((_ctx.drafts.rule.specials_folder) = $event)),
+                          "onUpdate:modelValue": _cache[15] || (_cache[15] = $event => ((_ctx.drafts.rule.specials_folder) = $event)),
                           label: "特别篇目录名"
                         }, null, 8, ["modelValue"])
                       ]),
@@ -1749,7 +1892,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                 }),
                 _createVNode(_component_v_combobox, {
                   modelValue: _ctx.drafts.rule.match_titles,
-                  "onUpdate:modelValue": _cache[14] || (_cache[14] = $event => ((_ctx.drafts.rule.match_titles) = $event)),
+                  "onUpdate:modelValue": _cache[16] || (_cache[16] = $event => ((_ctx.drafts.rule.match_titles) = $event)),
                   label: "匹配标题 / 别名",
                   placeholder: "输入后回车",
                   multiple: "",
@@ -1764,7 +1907,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                   variant: "tonal",
                   class: "mt-3"
                 }, {
-                  default: _withCtx(() => [...(_cache[52] || (_cache[52] = [
+                  default: _withCtx(() => [...(_cache[57] || (_cache[57] = [
                     _createTextVNode(" 确认后会自动创建一个默认首季，你可以继续在主界面里慢慢补全每个类型的关键词。 ", -1)
                   ]))]),
                   _: 1
@@ -1777,9 +1920,9 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                 _createVNode(_component_v_spacer),
                 _createVNode(_component_v_btn, {
                   variant: "text",
-                  onClick: _cache[15] || (_cache[15] = $event => (_ctx.dialogs.rule = false))
+                  onClick: _cache[17] || (_cache[17] = $event => (_ctx.dialogs.rule = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[53] || (_cache[53] = [
+                  default: _withCtx(() => [...(_cache[58] || (_cache[58] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -1788,7 +1931,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                   color: "primary",
                   onClick: _ctx.confirmAddRule
                 }, {
-                  default: _withCtx(() => [...(_cache[54] || (_cache[54] = [
+                  default: _withCtx(() => [...(_cache[59] || (_cache[59] = [
                     _createTextVNode("添加", -1)
                   ]))]),
                   _: 1
@@ -1804,14 +1947,14 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
     }, 8, ["modelValue"]),
     _createVNode(_component_v_dialog, {
       modelValue: _ctx.dialogs.season,
-      "onUpdate:modelValue": _cache[21] || (_cache[21] = $event => ((_ctx.dialogs.season) = $event)),
+      "onUpdate:modelValue": _cache[23] || (_cache[23] = $event => ((_ctx.dialogs.season) = $event)),
       "max-width": "680"
     }, {
       default: _withCtx(() => [
         _createVNode(_component_v_card, null, {
           default: _withCtx(() => [
             _createVNode(_component_v_card_title, null, {
-              default: _withCtx(() => [...(_cache[55] || (_cache[55] = [
+              default: _withCtx(() => [...(_cache[60] || (_cache[60] = [
                 _createTextVNode("新增季规则", -1)
               ]))]),
               _: 1
@@ -1827,7 +1970,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: _ctx.drafts.season.source_season,
-                          "onUpdate:modelValue": _cache[17] || (_cache[17] = $event => ((_ctx.drafts.season.source_season) = $event)),
+                          "onUpdate:modelValue": _cache[19] || (_cache[19] = $event => ((_ctx.drafts.season.source_season) = $event)),
                           label: "来源季号",
                           type: "number"
                         }, null, 8, ["modelValue"])
@@ -1841,7 +1984,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                       default: _withCtx(() => [
                         _createVNode(_component_v_text_field, {
                           modelValue: _ctx.drafts.season.tmdb_season_number,
-                          "onUpdate:modelValue": _cache[18] || (_cache[18] = $event => ((_ctx.drafts.season.tmdb_season_number) = $event)),
+                          "onUpdate:modelValue": _cache[20] || (_cache[20] = $event => ((_ctx.drafts.season.tmdb_season_number) = $event)),
                           label: "TMDB 正片季号",
                           type: "number"
                         }, null, 8, ["modelValue"])
@@ -1853,7 +1996,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                 }),
                 _createVNode(_component_v_combobox, {
                   modelValue: _ctx.drafts.season.tmdb_season_matchers,
-                  "onUpdate:modelValue": _cache[19] || (_cache[19] = $event => ((_ctx.drafts.season.tmdb_season_matchers) = $event)),
+                  "onUpdate:modelValue": _cache[21] || (_cache[21] = $event => ((_ctx.drafts.season.tmdb_season_matchers) = $event)),
                   label: "TMDB 季识别关键词（可选）",
                   placeholder: "输入后回车",
                   multiple: "",
@@ -1868,7 +2011,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                   variant: "tonal",
                   class: "mt-3"
                 }, {
-                  default: _withCtx(() => [...(_cache[56] || (_cache[56] = [
+                  default: _withCtx(() => [...(_cache[61] || (_cache[61] = [
                     _createTextVNode(" 先建季，再在主界面继续填各类型关键词；自动保存会在你停下来后自己处理。 ", -1)
                   ]))]),
                   _: 1
@@ -1881,9 +2024,9 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                 _createVNode(_component_v_spacer),
                 _createVNode(_component_v_btn, {
                   variant: "text",
-                  onClick: _cache[20] || (_cache[20] = $event => (_ctx.dialogs.season = false))
+                  onClick: _cache[22] || (_cache[22] = $event => (_ctx.dialogs.season = false))
                 }, {
-                  default: _withCtx(() => [...(_cache[57] || (_cache[57] = [
+                  default: _withCtx(() => [...(_cache[62] || (_cache[62] = [
                     _createTextVNode("取消", -1)
                   ]))]),
                   _: 1
@@ -1892,7 +2035,7 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
                   color: "primary",
                   onClick: _ctx.confirmAddSeason
                 }, {
-                  default: _withCtx(() => [...(_cache[58] || (_cache[58] = [
+                  default: _withCtx(() => [...(_cache[63] || (_cache[63] = [
                     _createTextVNode("添加", -1)
                   ]))]),
                   _: 1
@@ -1908,6 +2051,6 @@ function _sfc_render(_ctx, _cache, $props, $setup, $data, $options) {
     }, 8, ["modelValue"])
   ]))
 }
-const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['render',_sfc_render],['__scopeId',"data-v-954af3cc"]]);
+const Config = /*#__PURE__*/_export_sfc(_sfc_main, [['render',_sfc_render],['__scopeId',"data-v-9ba87264"]]);
 
 export { Config as default };

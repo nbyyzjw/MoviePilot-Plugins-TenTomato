@@ -66,6 +66,46 @@
         </v-card>
 
         <v-card variant="text" class="border rounded mb-4">
+          <v-card-title class="text-body-2 px-3 py-2">配置订阅</v-card-title>
+          <v-card-text class="px-3 py-2">
+            <v-alert type="info" density="compact" variant="tonal" class="mb-3">
+              默认会订阅这个 GitHub 仓库里的规则 JSON。首次安装会拿它做初始化，后面你也可以手动“同步订阅”，把远端默认规则安全补到本地，不会直接覆盖你已经手改过的内容。
+            </v-alert>
+            <v-row class="align-center">
+              <v-col cols="12" md="4">
+                <v-switch v-model="state.subscription_enabled" label="启用订阅规则" inset hide-details />
+              </v-col>
+              <v-col cols="12" md="8">
+                <div class="d-flex flex-wrap align-center gap-2">
+                  <v-btn
+                    size="small"
+                    color="primary"
+                    variant="tonal"
+                    :loading="syncingSubscription"
+                    :disabled="loading || saving"
+                    @click="syncSubscription"
+                  >
+                    立即同步订阅
+                  </v-btn>
+                  <span class="text-caption text-medium-emphasis" v-if="subscriptionStatusLabel">{{ subscriptionStatusLabel }}</span>
+                </div>
+              </v-col>
+            </v-row>
+            <v-combobox
+              v-model="state.subscription_urls"
+              label="订阅地址"
+              placeholder="输入 JSON 地址后回车，可配多个，按顺序尝试"
+              multiple
+              chips
+              closable-chips
+              clearable
+              hide-selected
+              class="mt-3"
+            />
+          </v-card-text>
+        </v-card>
+
+        <v-card variant="text" class="border rounded mb-4">
           <v-card-title class="text-body-2 d-flex align-center px-3 py-2">
             <span>通用关键词库</span>
             <v-spacer />
@@ -498,6 +538,9 @@ const createEmptyState = () => ({
   enabled: false,
   notify: false,
   specials_folder: 'Specials',
+  subscription_enabled: true,
+  subscription_urls: [],
+  subscription_last_sync: {},
   commonTypes: [],
   rules: [],
   history: [],
@@ -547,6 +590,7 @@ export default defineComponent({
     const state = ref(createEmptyState())
     const loading = ref(false)
     const saving = ref(false)
+    const syncingSubscription = ref(false)
     const saveError = ref('')
     const saveStatus = ref('idle')
     const dirty = ref(false)
@@ -617,6 +661,11 @@ export default defineComponent({
         enabled: !!raw?.enabled,
         notify: !!raw?.notify,
         specials_folder: String(raw?.specials_folder || 'Specials'),
+        subscription_enabled: raw?.subscription_enabled !== false,
+        subscription_urls: normalizeStringArray(raw?.subscription_urls || []),
+        subscription_last_sync: raw?.subscription_last_sync && typeof raw.subscription_last_sync === 'object'
+          ? raw.subscription_last_sync
+          : {},
         commonTypes,
         rules,
         history: Array.isArray(raw?.history) ? raw.history : [],
@@ -625,6 +674,7 @@ export default defineComponent({
 
     const statusText = computed(() => {
       if (loading.value) return '正在加载'
+      if (syncingSubscription.value) return '正在同步订阅'
       if (saving.value) return '正在保存'
       if (saveStatus.value === 'invalid') return '待补全后保存'
       if (dirty.value) return '有未保存更改'
@@ -635,6 +685,7 @@ export default defineComponent({
 
     const statusColor = computed(() => {
       if (loading.value) return 'info'
+      if (syncingSubscription.value) return 'primary'
       if (saving.value) return 'primary'
       if (saveStatus.value === 'invalid') return 'warning'
       if (saveStatus.value === 'error') return 'error'
@@ -644,6 +695,13 @@ export default defineComponent({
     })
 
     const lastSavedLabel = computed(() => (lastSavedAt.value ? `上次保存：${lastSavedAt.value}` : ''))
+    const subscriptionStatusLabel = computed(() => {
+      const info = state.value.subscription_last_sync || {}
+      if (!info?.message && !info?.synced_at) return ''
+      const source = info?.source ? ` · ${info.source}` : ''
+      const time = info?.synced_at ? ` · ${info.synced_at}` : ''
+      return `${info.message || '订阅状态未知'}${source}${time}`
+    })
 
     const orderedSeasons = (rule) => {
       return [...(rule?.seasons || [])].sort((a, b) => Number(a.source_season || 0) - Number(b.source_season || 0))
@@ -750,6 +808,8 @@ export default defineComponent({
         enabled: !!state.value.enabled,
         notify: !!state.value.notify,
         specials_folder: String(state.value.specials_folder || 'Specials').trim() || 'Specials',
+        subscription_enabled: !!state.value.subscription_enabled,
+        subscription_urls: normalizeStringArray(state.value.subscription_urls),
         common_types,
         rules,
       }
@@ -839,6 +899,33 @@ export default defineComponent({
         return false
       } finally {
         saving.value = false
+      }
+    }
+
+    const syncSubscription = async () => {
+      if (!props.api?.post) return false
+      const saved = await saveNow({ silent: false })
+      if (!saved) return false
+      syncingSubscription.value = true
+      saveError.value = ''
+      try {
+        const result = await props.api.post(`plugin/${PLUGIN_ID}/pull_subscription`, { mode: 'merge' })
+        if (!result || result.code !== 0) {
+          throw new Error(result?.message || '同步订阅失败')
+        }
+        updateStateSilently(() => {
+          state.value = hydrateState(result.data || {})
+        })
+        dirty.value = false
+        saveStatus.value = 'saved'
+        lastSavedAt.value = new Date().toLocaleString('zh-CN', { hour12: false })
+        return true
+      } catch (error) {
+        saveStatus.value = 'error'
+        saveError.value = error?.message || '同步订阅失败'
+        return false
+      } finally {
+        syncingSubscription.value = false
       }
     }
 
@@ -1019,13 +1106,16 @@ export default defineComponent({
       drafts,
       loading,
       saving,
+      syncingSubscription,
       saveError,
       statusText,
       statusColor,
       lastSavedLabel,
+      subscriptionStatusLabel,
       validationIssues,
       loadState,
       saveNow,
+      syncSubscription,
       openTypeDialog,
       confirmAddType,
       removeCommonType,
